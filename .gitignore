@@ -1,0 +1,32 @@
+# 依赖
+node_modules/
+
+# 环境变量与密钥
+.env
+.env.local
+.env.*.local
+
+# 构建产物
+dist/
+build/
+*.tsbuildinfo
+
+# 运行时数据
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# 多媒体临时文件
+src/data/multimedia/*/temp/
+
+# 日志
+*.log
+logs/
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.trae/
