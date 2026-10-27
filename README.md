@@ -1,2 +1,13 @@
 # humanize-agent
-Never Forget a Thing. / 一个专注于长期记忆的Agent
+
+> **Never Forget a Thing.**
+>
+> 一个专注于长期记忆的 Agent
+
+## 项目简介
+
+humanize-agent 致力于探索 Agent 的长期记忆能力：让 Agent 能够在持续交互中保留有价值的信息，并在后续对话中利用这些信息，提供更连贯、更贴合上下文的体验。
+
+## 项目状态
+
+项目目前处于早期阶段。仓库尚未包含可运行的程序代码，因此暂时没有安装、配置或使用说明。随着项目实现逐步完善，本 README 将同步补充相关文档。
