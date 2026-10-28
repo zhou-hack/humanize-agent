@@ -31,6 +31,7 @@ flowchart LR
 - `agent/`：决定何时调用工具、维护对话循环，不直接操作 SQLite 或表情包文件。
 - `tool_calling/`：注册、校验、调度和异常转换，不包含具体记忆检索逻辑。
 - `tool_calling/file_tools/`：实现可信 workspace 边界及文件读取、精确编辑，不允许模型传入工作区根目录。
+- `tool_calling/workspace_manager.ts`：管理默认目录和用户选择的当前目录，按当前目录创建文件与命令工具。
 - `tool_calling/command_tools/`：实现三档命令权限、用户审批、可信环境解析和子进程管理，不承担 OS 沙箱职责。
 - `memory/`：实现记忆读写与检索。
 - `media.ts`：实现表情包保存和检索。

@@ -10,6 +10,13 @@ export {
   type CommandToolsOptions
 } from './command_tools/index.js'
 export { createFileTools, type FileToolsOptions } from './file_tools/index.js'
+export {
+  createWorkspaceManager,
+  WorkspaceManager,
+  type WorkspaceManagerOptions,
+  type WorkspaceSnapshot,
+  type WorkspaceToolOptions
+} from './workspace_manager.js'
 export type {
   ToolCall,
   ToolContext,
