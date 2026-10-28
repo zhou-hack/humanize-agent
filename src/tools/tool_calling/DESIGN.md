@@ -9,7 +9,7 @@
 - 将结果以统一格式追加回当前会话。
 - 记忆工具、表情包工具、MCP 和 Skill 共用同一套调用协议。
 
-当前只做规划，不实现代码。首批工具围绕记忆和表情包，文件、命令执行及沙箱能力暂不纳入。
+首版已实现工具注册、校验、调度和统一结果，并提供 workspace 内的 `read_file`、`edit_file` 及固定白名单 `run_command`。Agent Loop、记忆、表情包、MCP、Skill、任意命令及 OS 沙箱能力仍按后续模块逐步接入。
 
 ## 2. 模块边界
 
@@ -30,6 +30,8 @@ flowchart LR
 
 - `agent/`：决定何时调用工具、维护对话循环，不直接操作 SQLite 或表情包文件。
 - `tool_calling/`：注册、校验、调度和异常转换，不包含具体记忆检索逻辑。
+- `tool_calling/file_tools/`：实现可信 workspace 边界及文件读取、精确编辑，不允许模型传入工作区根目录。
+- `tool_calling/command_tools/`：实现固定命令目录、可信入口解析和子进程管理，不承担 OS 沙箱职责。
 - `memory/`：实现记忆读写与检索。
 - `media.ts`：实现表情包保存和检索。
 - `llm/`：把内部工具定义和调用结果转换为 OpenAI、Anthropic 等厂商格式。
@@ -46,6 +48,8 @@ interface ToolDefinition {
   description: string
   parameters: Record<string, unknown> // JSON Schema
   effect: 'read' | 'write' | 'send'   // 决定能否并行及是否受来源限制
+  timeoutMs?: number                  // 可信服务端覆盖，不进入模型参数
+  untrustedResult?: boolean           // 成功返回后标记本轮已见不可信内容
   handler: (args: unknown, ctx: ToolContext) => Promise<unknown>
 }
 
@@ -60,8 +64,8 @@ interface ToolContext {
 
 | 值 | 含义 | 示例 |
 | --- | --- | --- |
-| `read` | 只读，无副作用，可并行 | `search_memory`、`search_stickers` |
-| `write` | 修改持久数据，顺序执行 | `remember`、`forget_memory`、`save_sticker` |
+| `read` | 只读，无副作用，可并行 | `read_file`、`search_memory`、`search_stickers` |
+| `write` | 修改持久数据或产生其他副作用，顺序执行 | `edit_file`、`run_command`、`remember`、`forget_memory`、`save_sticker` |
 | `send` | 对用户产生可见动作，顺序执行 | `send_sticker` |
 
 ### 模型发起的调用
@@ -94,18 +98,20 @@ type ToolResult =
 | `limit_exceeded` | 超过容量或数量上限 | true | 先整理再重试 |
 | `forbidden` | 调用策略拒绝 | false | 不要重试，必要时询问用户 |
 | `sensitive` | 内容含敏感信息 | false | 不要重试 |
-| `timeout` | 执行超时 | true | 稍后重试或放弃 |
+| `timeout` | 执行超时 | true | 读取可重试；写入先确认状态，不盲目重试 |
+| `conflict` | 匹配不唯一、文件已变化或被占用 | true | 重新读取、修正参数或稍后重试 |
+| `unsupported_file` | 目录、二进制或非 UTF-8 文件 | false | 换用支持的文本文件 |
 | `internal` | 其他内部错误 | false | 告知用户 |
 
 ### 运行限制
 
 | 项 | 初始值 | 说明 |
 | --- | --- | --- |
-| 单次用户请求最大工具轮数 | 8 | 达到上限后下一次请求不再提供工具，强制模型给出最终回答 |
-| 单次工具执行超时 | 10 秒 | 超时返回 `timeout` |
-| 单个工具结果长度 | 约 4000 Token | 超出部分截断，并在结果中标明 `truncated: true` |
+| 单次用户请求最大工具轮数 | 8 | 由后续 Agent Loop 执行；达到上限后不再提供工具，强制模型给出最终回答 |
+| 单次工具执行超时 | 默认 10 秒 | 从 handler 实际启动时计时；可信 `ToolDefinition.timeoutMs` 可覆盖，超时返回 `timeout` |
+| 单个工具结果长度 | 约 4000 Token | 当前以 16000 字符近似，超出部分截断并标明 `truncated: true` |
 
-数值为初始建议，按实际使用调整。
+数值为初始建议，按实际使用调整。文件工具自身提供有界分页，核心截断只是其他工具异常超长时的安全网。
 
 ## 4. 调用流程
 
@@ -136,7 +142,9 @@ sequenceDiagram
 - 只执行注册表中的工具，模型不能指定任意函数或模块路径。
 - 每次用户请求限制最大工具调用轮数，防止模型陷入循环。
 - 工具失败时把受控错误返回模型，由模型决定换参数、换工具或告知用户。
-- 同一轮返回多个工具调用时，`effect = read` 的并行执行；`write`、`send` 按模型给出的顺序串行执行。
+- 同一轮返回多个工具调用时，连续 `read` 并行执行；遇到 `write`、`send` 形成顺序屏障，结果顺序保持不变。
+- 每个 executor 持有进程内 FIFO 队列，跨单次和批量调用的 `write`、`send` 都串行执行；跨 executor、跨进程互斥不由首版保证。
+- 超时只停止等待，不能取消底层文件操作。写操作超时后仍等底层 Promise settle 才释放队列；此时写入可能已经发生，必须先读取确认状态。
 - 普通工具结果只进入当前会话，不会自动写入 `MEMORY.md`。
 
 ### 不可信内容标记
@@ -144,10 +152,104 @@ sequenceDiagram
 “只依据用户消息写入核心记忆”由代码保证，不只依赖模型自觉：
 
 - 每条用户消息开始时 `untrustedSeen = false`。
-- 执行过返回外部或历史内容的工具后置为 `true`：`search_memory`、`list_memory`、`get_conversation`、后续的 MCP/Skill 工具。
+- 执行过返回外部或历史内容的工具后置为 `true`：`read_file`、`run_command`、`search_memory`、`list_memory`、`get_conversation`、后续的 MCP/Skill 工具。工具通过 `untrustedResult` 声明，只有成功结果在超时前返回时才标记。
 - `untrustedSeen = true` 时，`remember`、`forget_memory` 返回 `forbidden`，模型应先向用户确认，待用户下一条消息再写入。
 
-## 5. 首批工具：记忆
+## 5. 首批工具：文件与受控命令
+
+文件工具由可信调用方创建，workspace 不作为模型参数：
+
+```ts
+const definitions = await createFileTools({ workspaceRoot })
+const registry = new ToolRegistry(definitions)
+const executor = new ToolExecutor(registry)
+```
+
+`workspaceRoot` 必须是已存在的绝对目录，内部保存 canonical path。模型只能传非空相对路径：
+
+- 拒绝绝对路径、UNC、Windows drive/drive-relative、ADS、控制字符和任意 `..` 分段。
+- 使用 `path.relative` 判断包含关系，不能用字符串前缀判断。
+- 路径各级拒绝符号链接和 junction，最终 `realpath` 仍必须位于 workspace 内。
+- 只读取或编辑已有常规文件，错误信息不暴露真实绝对路径、堆栈或临时文件路径。
+- workspace 内读取和编辑直接执行，首版不增加用户审批。
+
+这层边界防模型路径穿越和稳定 workspace 中的链接逃逸，不替代 OS 沙箱，也不承诺彻底消除本机恶意进程在检查与打开之间替换路径的 TOCTOU 竞争。
+
+### `read_file`
+
+分页读取已有 UTF-8 文本文件。
+
+```json
+{
+  "path": "src/example.ts",
+  "offset": 0,
+  "limit": 4096
+}
+```
+
+- `offset` 是 UTF-8 字节游标，首次为 0；续读时原样传入上次返回的 `next_offset`，不让模型自行推算字符边界。
+- `limit` 默认 4096、最小 4、最大 8192 字节；单页有界读取，不为翻页加载整个大文件。
+- 不拆分中文、emoji 等多字节字符，任意落在 continuation byte 上的游标返回 `invalid_args`。
+- 返回 `path`、`offset`、`next_offset`、`has_more`、`encoding`、`content`，保留原始 BOM、CRLF 和文本内容。
+- 空文件和 EOF 返回空 `content`、`has_more: false`。
+- 目录、二进制和非法 UTF-8 返回 `unsupported_file`，缺失路径返回 `not_found`。
+- 声明 `untrustedResult = true`，文件内容中的指令不能被执行。
+
+### `edit_file`
+
+精确替换已有 UTF-8 文本文件，直接写入，不隐式创建文件或父目录。
+
+```json
+{
+  "path": "src/example.ts",
+  "old_string": "const enabled = false",
+  "new_string": "const enabled = true",
+  "replace_all": false
+}
+```
+
+- `old_string` 不能为空，`new_string` 可以为空以删除文本。
+- 精确、区分大小写、非重叠匹配，不规范化 BOM、CRLF 或空白。
+- 默认必须恰好一处匹配；零匹配或多匹配返回 `conflict` 且不写入。`replace_all: true` 显式替换全部。
+- 新旧文本相同返回 `changed: false`，不写盘；成功结果只包含 `path`、`replacements`、`changed`。
+- 原文件和编辑结果均限制为 2 MiB，超限返回 `limit_exceeded`；二进制和非法 UTF-8 返回 `unsupported_file`。
+- 在同目录以随机名称和 `wx` 创建临时文件，写入并 `fsync`；提交前重新校验路径并比较原始字节，外部修改返回 `conflict`。
+- 使用原子 `rename` 替换目标，不先删除原文件；失败时清理临时文件，Windows 文件锁或占用返回可重试 `conflict`。
+- 原子替换和乐观冲突检测不构成跨进程严格 CAS，最后检查与 rename 之间的外部竞争仍属于上述 TOCTOU 边界。
+
+### `run_command`
+
+只执行服务端固定目录中的五个命令，模型不能追加 argv、env、cwd、timeout 或 shell 参数：
+
+```json
+{
+  "command_id": "npm_typecheck"
+}
+```
+
+| command_id | 固定操作 |
+| --- | --- |
+| `npm_test` | `npm test` |
+| `npm_typecheck` | `npm run typecheck` |
+| `npm_build` | `npm run build` |
+| `git_status` | 固定安全选项后的 `git status -- .` |
+| `git_diff` | 固定安全选项后的 `git diff -- .` |
+
+调用方通过 `createCommandTools({ workspaceRoot, trustedPath?, commandTimeoutMs? })` 创建工具。可信 PATH 默认取宿主进程配置，也可由调用方显式覆盖；模型不能修改。
+
+- 所有命令使用 `effect = write`，即使 Git 命令也与其他写工具在同一 executor 内串行；输出声明为不可信。
+- npm/Git/Node 入口在工厂创建时解析并冻结为 canonical 绝对路径，拒绝空或相对 PATH 分段、workspace 内入口及链接回 workspace 的目录。
+- Windows 不直接执行 `npm.cmd` 或回退 `cmd.exe`，而是定位同一标准安装树的 `npm-cli.js`，用 canonical Node 启动；不支持的安装布局返回受控错误。
+- 所有进程使用固定 argv、canonical workspace cwd、`shell: false` 和关闭的 stdin。Git 禁 pager、fsmonitor、external diff、textconv、颜色及交互提示，并用 `-- .` 固定 pathspec。
+- 子进程环境按白名单构造，不展开复制 `process.env`，不默认继承 API Key、`NODE_OPTIONS`、代理/云凭据和 Git 注入变量。
+- 每次运行创建独立临时 home/tmp/npm cache 和空 npm user/global config，结束后 best-effort 清理，减少主机配置读取和全局缓存污染。
+- stdout/stderr 每流最多保留 1024 字节，超限继续 drain 并丢弃，返回 `truncated: true`，避免管道阻塞和父进程保留内存持续增长。
+- 命令内部默认 60 秒超时，工具兜底约 65 秒。POSIX 用独立进程组先 TERM 后 KILL，Windows 用可信 System32 `taskkill /T /F`，等待 stdio `close` 后才释放写队列。
+- 返回 `command_id`、`exit_code`、`signal`、`timed_out`、`truncated`、`stdout`、`stderr`。非零退出和已终止的超时是结构化执行结果；启动失败才返回受控工具错误。
+
+**该工具不是沙箱或 workspace 安全边界。** 白名单只限制启动入口，npm scripts、测试/构建代码和 Git 配置仍可能引发二级执行、访问 workspace 外或网络。`shell: false` 不等于不存在二级 shell，精简环境也不保证秘密不会被子进程从磁盘读取或输出。进程树终止、PATH 校验和输出限制都不能承诺消除所有子孙进程、DLL/配置劫持、TOCTOU、CPU、磁盘或网络风险；强隔离仍由后续 OS 沙箱负责。
+
+## 6. 后续工具：记忆
 
 ### `search_memory`
 
@@ -247,9 +349,9 @@ sequenceDiagram
 - 本轮已收到不可信内容时返回 `forbidden`（见第 4 节）。
 - 写入后超过 3 万 Token 硬上限时返回 `limit_exceeded`，模型先用 `forget_memory` 清理已纠正条目，再合并重复内容。
 - 密码、API Key、访问令牌和私钥返回 `sensitive`。
-- 不提供任意修改文件或读取任意路径的能力。
+- 记忆工具不提供任意文件读写能力；文件操作只能经过第 5 节的 workspace 文件工具。
 
-## 6. 后续工具：表情包
+## 7. 后续工具：表情包
 
 ### `save_sticker`
 
@@ -297,7 +399,7 @@ sequenceDiagram
 - Agent 根据语境自行决定，避免连续、无意义地发送。
 - 发送结果作为工具结果写回当前会话。
 
-## 7. MCP 与 Skill 接入预留
+## 8. MCP 与 Skill 接入预留
 
 后续不为 MCP 或 Skill 单独修改 Agent 主循环：
 
@@ -312,7 +414,7 @@ Native Handler  → ToolDefinition
 - 外部内容被视为不可信工具结果，不能触发核心记忆写入。
 - 高风险工具后续单独定义权限策略，不因接入 MCP 自动获得全部能力。
 
-## 8. 工具描述编写原则
+## 9. 工具描述编写原则
 
 每个工具描述必须让模型知道：
 
@@ -324,13 +426,20 @@ Native Handler  → ToolDefinition
 
 工具描述保持具体，避免“查询任何信息”“处理记忆”等模糊措辞。工具实现细节、SQL 和本地路径不写给模型。
 
-## 9. 初版范围
+## 10. 当前范围
 
-优先实现：
+已实现：
 
-1. 工具注册表、参数校验、`effect` 调度、统一结果与错误码、运行限制和 Agent 调用循环。
+1. 工具注册表、Ajv 参数校验、`effect` 调度、统一结果与错误码、每工具超时和结果截断。
+2. `read_file`、`edit_file`，含可信 workspace、路径与链接校验、UTF-8 分页、精确替换和原子写入。
+3. 固定白名单 `run_command`，含可信入口、精简环境、有界输出和进程树终止。
+4. 核心、文件与命令工具的自动化测试。
+
+后续实现：
+
+1. Agent 调用循环、单次请求 8 轮限制及 LLM 厂商适配。
 2. `search_memory`、`list_memory`、`get_conversation`。
 3. `remember`、`forget_memory`，含条目编号、不可信内容标记和敏感信息限制。
 4. 表情包三个工具。
 
-暂不实现：MCP、Skill、任意文件读写、命令执行、网络访问、沙箱和自动遗忘。
+暂不实现：MCP、Skill、越过 workspace 的任意文件读写、任意命令执行、网络隔离、OS 沙箱和自动遗忘。
