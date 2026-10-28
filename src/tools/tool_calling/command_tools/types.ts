@@ -1,13 +1,28 @@
-export type CommandId = 'npm_test' | 'npm_typecheck' | 'npm_build' | 'git_status' | 'git_diff'
+import type { ToolContext } from '../types.js'
+
+export type CommandExecutionMode = 'workspace' | 'approval' | 'open'
+
+export interface CommandApprovalRequest {
+  command: string
+  cwd: string
+}
+
+export type CommandApprovalHandler = (
+  request: CommandApprovalRequest,
+  context: ToolContext
+) => boolean | Promise<boolean>
 
 export interface CommandToolsOptions {
   workspaceRoot: string
+  mode?: CommandExecutionMode
   trustedPath?: string
   commandTimeoutMs?: number
+  approvalTimeoutMs?: number
+  requestApproval?: CommandApprovalHandler
 }
 
 export interface CommandResult {
-  command_id: CommandId
+  command: string
   exit_code: number | null
   signal: NodeJS.Signals | null
   timed_out: boolean
@@ -16,20 +31,17 @@ export interface CommandResult {
   stderr: string
 }
 
-export interface CommandRuntime {
-  executable: string
-  args: readonly string[]
-  env: NodeJS.ProcessEnv
-}
-
-export interface ProcessSpec {
-  executable: string
-  args: readonly string[]
+interface ProcessSpecBase {
   cwd: string
   env: NodeJS.ProcessEnv
   timeoutMs: number
   maxOutputBytes?: number
 }
+
+export type ProcessSpec = ProcessSpecBase & (
+  | { executable: string; args: readonly string[] }
+  | { command: string }
+)
 
 export interface ProcessResult {
   exitCode: number | null

@@ -1,43 +1,13 @@
-import { constants } from 'node:fs'
-import { access, lstat, realpath } from 'node:fs/promises'
+import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { ToolError } from '../errors.js'
-import { COMMAND_DEFINITIONS } from './commands.js'
-import type { CommandId, CommandRuntime } from './types.js'
 
-export async function resolveCommandRuntimes(
+export async function resolveCommandEnvironment(
   workspaceRoot: string,
   trustedPath = process.env.PATH ?? ''
-): Promise<Record<CommandId, CommandRuntime>> {
+): Promise<NodeJS.ProcessEnv> {
   const pathDirectories = await resolveTrustedDirectories(workspaceRoot, trustedPath)
-  const [npmEntry, gitExecutable, nodeExecutable] = await Promise.all([
-    findExecutable(pathDirectories, process.platform === 'win32' ? 'npm.cmd' : 'npm', workspaceRoot),
-    findExecutable(pathDirectories, process.platform === 'win32' ? 'git.exe' : 'git', workspaceRoot),
-    canonicalFile(process.execPath, workspaceRoot)
-  ])
-  const npmCli = await resolveNpmCli(npmEntry, workspaceRoot)
-  const environment = createBaseEnvironment(pathDirectories, path.dirname(nodeExecutable))
-
-  const runtimes = {} as Record<CommandId, CommandRuntime>
-
-  for (const [id, definition] of Object.entries(COMMAND_DEFINITIONS) as [
-    CommandId,
-    (typeof COMMAND_DEFINITIONS)[CommandId]
-  ][]) {
-    runtimes[id] = definition.program === 'npm'
-      ? {
-          executable: nodeExecutable,
-          args: [npmCli, ...definition.args],
-          env: environment
-        }
-      : {
-          executable: gitExecutable,
-          args: definition.args,
-          env: environment
-        }
-  }
-
-  return runtimes
+  return createBaseEnvironment(pathDirectories, path.dirname(process.execPath))
 }
 
 async function resolveTrustedDirectories(
@@ -74,67 +44,6 @@ async function resolveTrustedDirectories(
   }
 
   return directories
-}
-
-async function findExecutable(
-  directories: string[],
-  fileName: string,
-  workspaceRoot: string
-): Promise<string> {
-  for (const directory of directories) {
-    const candidate = path.join(directory, fileName)
-
-    try {
-      return await canonicalFile(candidate, workspaceRoot)
-    } catch (error) {
-      if (isNodeError(error, 'ENOENT')) {
-        continue
-      }
-      throw error
-    }
-  }
-
-  throw new ToolError('not_found', `未找到可信的 ${fileName} 可执行文件`)
-}
-
-async function canonicalFile(candidate: string, workspaceRoot: string): Promise<string> {
-  const canonical = await realpath(candidate)
-  const stat = await lstat(canonical)
-
-  if (!stat.isFile()) {
-    throw new ToolError('forbidden', '命令入口不是常规文件')
-  }
-  if (isWithin(workspaceRoot, canonical)) {
-    throw new ToolError('forbidden', '命令入口不能位于工作区内')
-  }
-  if (process.platform !== 'win32') {
-    await access(canonical, constants.X_OK)
-  }
-
-  return canonical
-}
-
-async function resolveNpmCli(npmEntry: string, workspaceRoot: string): Promise<string> {
-  if (path.basename(npmEntry) === 'npm-cli.js') {
-    return npmEntry
-  }
-
-  const candidate = path.join(
-    path.dirname(npmEntry),
-    'node_modules',
-    'npm',
-    'bin',
-    'npm-cli.js'
-  )
-
-  try {
-    return await canonicalFile(candidate, workspaceRoot)
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) {
-      throw new ToolError('internal', '不支持当前 npm 安装布局')
-    }
-    throw error
-  }
 }
 
 function createBaseEnvironment(pathDirectories: string[], nodeDirectory: string): NodeJS.ProcessEnv {

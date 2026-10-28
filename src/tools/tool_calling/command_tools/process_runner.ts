@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -22,14 +22,16 @@ export async function runProcess(spec: ProcessSpec): Promise<ProcessResult> {
 }
 
 async function execute(spec: ProcessSpec, temporaryHome: string): Promise<ProcessResult> {
-  const child = spawn(spec.executable, [...spec.args], {
+  const options: SpawnOptions = {
     cwd: spec.cwd,
     env: createEnvironment(spec.env, temporaryHome),
-    shell: false,
     detached: process.platform !== 'win32',
     windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe']
-  })
+  }
+  const child: ChildProcess = 'command' in spec
+    ? spawn(spec.command, [], { ...options, shell: true })
+    : spawn(spec.executable, [...spec.args], { ...options, shell: false })
   const stdout = new BoundedOutput(spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES)
   const stderr = new BoundedOutput(spec.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES)
 

@@ -3,7 +3,9 @@ export { ToolExecutor } from './executor.js'
 export { ToolRegistry } from './registry.js'
 export {
   createCommandTools,
-  type CommandId,
+  type CommandApprovalHandler,
+  type CommandApprovalRequest,
+  type CommandExecutionMode,
   type CommandResult,
   type CommandToolsOptions
 } from './command_tools/index.js'

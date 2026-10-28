@@ -13,6 +13,15 @@ export interface WorkspaceFile {
   readonly mode: number
 }
 
+export interface WorkspaceDirectory {
+  readonly absolutePath: string
+  readonly relativePath: string
+}
+
+export interface WorkspaceEntry extends WorkspaceFile {
+  readonly type: 'file' | 'directory' | 'other'
+}
+
 export async function createWorkspace(workspaceRoot: string): Promise<Workspace> {
   if (!path.isAbsolute(workspaceRoot)) {
     throw new TypeError('workspaceRoot 必须是绝对路径')
@@ -32,7 +41,30 @@ export async function resolveWorkspaceFile(
   workspace: Workspace,
   inputPath: string
 ): Promise<WorkspaceFile> {
-  const segments = parseRelativePath(inputPath)
+  const entry = await resolveWorkspaceEntry(workspace, inputPath)
+  if (entry.type !== 'file') {
+    throw new ToolError('unsupported_file', '目标不是常规文件')
+  }
+  return entry
+}
+
+export async function resolveWorkspaceDirectory(
+  workspace: Workspace,
+  inputPath: string
+): Promise<WorkspaceDirectory> {
+  const entry = await resolveWorkspaceEntry(workspace, inputPath, true)
+  if (entry.type !== 'directory') {
+    throw new ToolError('unsupported_file', '目标不是目录')
+  }
+  return entry
+}
+
+export async function resolveWorkspaceEntry(
+  workspace: Workspace,
+  inputPath: string,
+  allowRoot = false
+): Promise<WorkspaceEntry> {
+  const segments = parseRelativePath(inputPath, allowRoot)
   const candidate = path.resolve(workspace.root, ...segments)
 
   if (!isWithin(workspace.root, candidate)) {
@@ -61,20 +93,16 @@ export async function resolveWorkspaceFile(
   }
 
   const stat = await lstat(absolutePath)
-
-  if (!stat.isFile()) {
-    throw new ToolError('unsupported_file', '目标不是常规文件')
-  }
-
   return {
     absolutePath,
-    relativePath: segments.join('/'),
+    relativePath: segments.length === 0 ? '.' : segments.join('/'),
     size: stat.size,
-    mode: stat.mode
+    mode: stat.mode,
+    type: stat.isFile() ? 'file' : stat.isDirectory() ? 'directory' : 'other'
   }
 }
 
-function parseRelativePath(inputPath: string): string[] {
+function parseRelativePath(inputPath: string, allowRoot: boolean): string[] {
   if (
     !inputPath ||
     /[\u0000-\u001f]/u.test(inputPath) ||
@@ -93,6 +121,7 @@ function parseRelativePath(inputPath: string): string[] {
 
   const segments = normalized.split('/').filter((segment) => segment && segment !== '.')
 
+  if (segments.length === 0 && allowRoot) return []
   if (segments.length === 0 || segments.some((segment) => segment === '..')) {
     throw new ToolError('invalid_args', 'path 不能包含路径穿越')
   }

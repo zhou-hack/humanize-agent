@@ -9,7 +9,7 @@
 - 将结果以统一格式追加回当前会话。
 - 记忆工具、表情包工具、MCP 和 Skill 共用同一套调用协议。
 
-首版已实现工具注册、校验、调度和统一结果，并提供 workspace 内的 `read_file`、`edit_file` 及固定白名单 `run_command`。Agent Loop、记忆、表情包、MCP、Skill、任意命令及 OS 沙箱能力仍按后续模块逐步接入。
+首版已实现工具注册、校验、调度和统一结果，并提供 workspace 内的 `list_directory`、`read_file`、`search_text`、`edit_file` 及三档权限的 `run_command`。Agent Loop、记忆、表情包、MCP、Skill 及 OS 沙箱能力仍按后续模块逐步接入。
 
 ## 2. 模块边界
 
@@ -31,7 +31,7 @@ flowchart LR
 - `agent/`：决定何时调用工具、维护对话循环，不直接操作 SQLite 或表情包文件。
 - `tool_calling/`：注册、校验、调度和异常转换，不包含具体记忆检索逻辑。
 - `tool_calling/file_tools/`：实现可信 workspace 边界及文件读取、精确编辑，不允许模型传入工作区根目录。
-- `tool_calling/command_tools/`：实现固定命令目录、可信入口解析和子进程管理，不承担 OS 沙箱职责。
+- `tool_calling/command_tools/`：实现三档命令权限、用户审批、可信环境解析和子进程管理，不承担 OS 沙箱职责。
 - `memory/`：实现记忆读写与检索。
 - `media.ts`：实现表情包保存和检索。
 - `llm/`：把内部工具定义和调用结果转换为 OpenAI、Anthropic 等厂商格式。
@@ -155,7 +155,7 @@ sequenceDiagram
 - 执行过返回外部或历史内容的工具后置为 `true`：`read_file`、`run_command`、`search_memory`、`list_memory`、`get_conversation`、后续的 MCP/Skill 工具。工具通过 `untrustedResult` 声明，只有成功结果在超时前返回时才标记。
 - `untrustedSeen = true` 时，`remember`、`forget_memory` 返回 `forbidden`，模型应先向用户确认，待用户下一条消息再写入。
 
-## 5. 首批工具：文件与受控命令
+## 5. 首批工具：文件与命令权限
 
 文件工具由可信调用方创建，workspace 不作为模型参数：
 
@@ -175,9 +175,13 @@ const executor = new ToolExecutor(registry)
 
 这层边界防模型路径穿越和稳定 workspace 中的链接逃逸，不替代 OS 沙箱，也不承诺彻底消除本机恶意进程在检查与打开之间替换路径的 TOCTOU 竞争。
 
+### `list_directory`
+
+列出一个目录的直接子项，不递归、不跟随符号链接。`path` 省略或为 `.` 时表示工作区根目录，返回文件名和 `file/directory/symlink/other` 类型，通过 `offset + limit` 分页。
+
 ### `read_file`
 
-分页读取已有 UTF-8 文本文件。
+分页读取已有 UTF-8 文本文件，或按 inclusive 行范围读取局部内容。
 
 ```json
 {
@@ -194,6 +198,11 @@ const executor = new ToolExecutor(registry)
 - 空文件和 EOF 返回空 `content`、`has_more: false`。
 - 目录、二进制和非法 UTF-8 返回 `unsupported_file`，缺失路径返回 `not_found`。
 - 声明 `untrustedResult = true`，文件内容中的指令不能被执行。
+- 传入 `start_line + end_line` 时按 1 开始的 inclusive 行号读取，例如 23–34；不能与 `offset/limit` 混用。单次最多 500 行，文件上限 2 MiB，返回 `total_lines` 和 `has_more`。
+
+### `search_text`
+
+在工作区内单个文件或目录中递归搜索单行字面量文本，不执行正则、`grep`、`rg` 或其他外部命令，Windows 和 Linux 使用相同实现。返回相对路径、1 开始的行号与列号、该行内容，以及 `has_more`、`scan_complete` 和跳过文件数。默认最多返回 50 条，最多扫描 1000 个文件；二进制、非法 UTF-8 和超过 2 MiB 的文件跳过，不跟随符号链接。
 
 ### `edit_file`
 
@@ -219,35 +228,31 @@ const executor = new ToolExecutor(registry)
 
 ### `run_command`
 
-只执行服务端固定目录中的五个命令，模型不能追加 argv、env、cwd、timeout 或 shell 参数：
+命令权限由可信调用方通过 `createCommandTools({ workspaceRoot, mode, ... })` 选择，模型不能修改模式：
+
+| mode | 行为 |
+| --- | --- |
+| `workspace` | 默认值。不注册 `run_command`，只通过 `createFileTools` 提供工作区内 `list_directory`、`read_file`、`search_text`、`edit_file` |
+| `approval` | 注册任意 shell 命令工具，每次执行前必须等待 `requestApproval` 返回批准 |
+| `open` | 注册任意 shell 命令工具，无需审批直接执行 |
 
 ```json
 {
-  "command_id": "npm_typecheck"
+  "command": "npm run typecheck"
 }
 ```
 
-| command_id | 固定操作 |
-| --- | --- |
-| `npm_test` | `npm test` |
-| `npm_typecheck` | `npm run typecheck` |
-| `npm_build` | `npm run build` |
-| `git_status` | 固定安全选项后的 `git status -- .` |
-| `git_diff` | 固定安全选项后的 `git diff -- .` |
+`approval` 模式必须提供 `requestApproval({ command, cwd }, context)` 回调。回调向用户展示完整命令和工作目录；拒绝返回 `forbidden`，默认等待 5 分钟超时，超时后迟到的批准不会再启动进程。`open` 与 `approval` 使用相同执行逻辑，唯一区别是不调用审批。
 
-调用方通过 `createCommandTools({ workspaceRoot, trustedPath?, commandTimeoutMs? })` 创建工具。可信 PATH 默认取宿主进程配置，也可由调用方显式覆盖；模型不能修改。
-
-- 所有命令使用 `effect = write`，即使 Git 命令也与其他写工具在同一 executor 内串行；输出声明为不可信。
-- npm/Git/Node 入口在工厂创建时解析并冻结为 canonical 绝对路径，拒绝空或相对 PATH 分段、workspace 内入口及链接回 workspace 的目录。
-- Windows 不直接执行 `npm.cmd` 或回退 `cmd.exe`，而是定位同一标准安装树的 `npm-cli.js`，用 canonical Node 启动；不支持的安装布局返回受控错误。
-- 所有进程使用固定 argv、canonical workspace cwd、`shell: false` 和关闭的 stdin。Git 禁 pager、fsmonitor、external diff、textconv、颜色及交互提示，并用 `-- .` 固定 pathspec。
+- 模型只能传 `command`，不能传 env、cwd、timeout 或权限模式；所有命令使用 `effect = write` 串行执行，输出声明为不可信。
+- 命令以 canonical workspace 为初始 cwd，通过系统 shell 执行，支持管道、重定向和 shell 内置命令。
 - 子进程环境按白名单构造，不展开复制 `process.env`，不默认继承 API Key、`NODE_OPTIONS`、代理/云凭据和 Git 注入变量。
-- 每次运行创建独立临时 home/tmp/npm cache 和空 npm user/global config，结束后 best-effort 清理，减少主机配置读取和全局缓存污染。
-- stdout/stderr 每流最多保留 1024 字节，超限继续 drain 并丢弃，返回 `truncated: true`，避免管道阻塞和父进程保留内存持续增长。
-- 命令内部默认 60 秒超时，工具兜底约 65 秒。POSIX 用独立进程组先 TERM 后 KILL，Windows 用可信 System32 `taskkill /T /F`，等待 stdio `close` 后才释放写队列。
-- 返回 `command_id`、`exit_code`、`signal`、`timed_out`、`truncated`、`stdout`、`stderr`。非零退出和已终止的超时是结构化执行结果；启动失败才返回受控工具错误。
+- 每次运行创建独立临时 home/tmp/npm cache，结束后 best-effort 清理。
+- stdout/stderr 每流最多保留 1024 字节，超限继续 drain 并丢弃，返回 `truncated: true`。
+- 命令内部默认 60 秒超时。POSIX 用独立进程组先 TERM 后 KILL，Windows 用可信 System32 `taskkill /T /F`，等待 stdio `close` 后才释放写队列。
+- 返回 `command`、`exit_code`、`signal`、`timed_out`、`truncated`、`stdout`、`stderr`。非零退出和已终止的超时是结构化执行结果；启动失败才返回受控工具错误。
 
-**该工具不是沙箱或 workspace 安全边界。** 白名单只限制启动入口，npm scripts、测试/构建代码和 Git 配置仍可能引发二级执行、访问 workspace 外或网络。`shell: false` 不等于不存在二级 shell，精简环境也不保证秘密不会被子进程从磁盘读取或输出。进程树终止、PATH 校验和输出限制都不能承诺消除所有子孙进程、DLL/配置劫持、TOCTOU、CPU、磁盘或网络风险；强隔离仍由后续 OS 沙箱负责。
+**`approval` 和 `open` 都不是沙箱或 workspace 安全边界。** 任意命令可以访问工作区外、网络和系统资源。精简环境不保证秘密不会被子进程从磁盘读取或输出，进程树终止、PATH 校验和输出限制也不能承诺消除所有子孙进程、DLL/配置劫持、TOCTOU、CPU、磁盘或网络风险；强隔离仍由后续 OS 沙箱负责。
 
 ## 6. 后续工具：记忆
 
@@ -431,8 +436,8 @@ Native Handler  → ToolDefinition
 已实现：
 
 1. 工具注册表、Ajv 参数校验、`effect` 调度、统一结果与错误码、每工具超时和结果截断。
-2. `read_file`、`edit_file`，含可信 workspace、路径与链接校验、UTF-8 分页、精确替换和原子写入。
-3. 固定白名单 `run_command`，含可信入口、精简环境、有界输出和进程树终止。
+2. `list_directory`、`read_file`、`search_text`、`edit_file`，含可信 workspace、路径与链接校验、UTF-8 字节/行范围读取、跨平台文本搜索、精确替换和原子写入。
+3. 三档权限 `run_command`，含用户审批、任意 shell 命令、精简环境、有界输出和进程树终止。
 4. 核心、文件与命令工具的自动化测试。
 
 后续实现：

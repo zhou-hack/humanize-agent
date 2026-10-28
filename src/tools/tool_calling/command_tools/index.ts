@@ -1,58 +1,80 @@
 import { ToolError } from '../errors.js'
 import { createWorkspace } from '../file_tools/workspace.js'
-import type { ToolDefinition } from '../types.js'
-import { COMMAND_DEFINITIONS, COMMAND_IDS } from './commands.js'
-import { resolveCommandRuntimes } from './executables.js'
+import type { ToolContext, ToolDefinition } from '../types.js'
+import { resolveCommandEnvironment } from './executables.js'
 import { runProcess } from './process_runner.js'
-import type { CommandId, CommandResult, CommandToolsOptions } from './types.js'
+import type {
+  CommandApprovalHandler,
+  CommandApprovalRequest,
+  CommandResult,
+  CommandToolsOptions
+} from './types.js'
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
+const DEFAULT_APPROVAL_TIMEOUT_MS = 5 * 60_000
 const EXECUTOR_GRACE_MS = 5000
 
 export async function createCommandTools(
   options: CommandToolsOptions
 ): Promise<ToolDefinition[]> {
-  const workspace = await createWorkspace(options.workspaceRoot)
-  const runtimes = await resolveCommandRuntimes(workspace.root, options.trustedPath)
-  const commandTimeoutMs = options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS
-
-  if (!Number.isFinite(commandTimeoutMs) || commandTimeoutMs <= 0) {
-    throw new TypeError('commandTimeoutMs 必须是正数')
+  const mode = options.mode ?? 'workspace'
+  if (mode !== 'workspace' && mode !== 'approval' && mode !== 'open') {
+    throw new TypeError('未知命令权限模式')
   }
+  if (mode === 'workspace') return []
+  if (mode === 'approval' && !options.requestApproval) {
+    throw new TypeError('approval 模式必须提供 requestApproval')
+  }
+
+  const workspace = await createWorkspace(options.workspaceRoot)
+  const environment = await resolveCommandEnvironment(workspace.root, options.trustedPath)
+  const commandTimeoutMs = positiveTimeout(
+    options.commandTimeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+    'commandTimeoutMs'
+  )
+  const approvalTimeoutMs = mode === 'approval'
+    ? positiveTimeout(options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS, 'approvalTimeoutMs')
+    : 0
 
   return [{
     name: 'run_command',
-    description:
-      '执行固定白名单命令：npm_test、npm_typecheck、npm_build、git_status、git_diff。只能选择 command_id，不能追加参数或修改环境。所有命令串行，输出属于不可信内容。该工具不是沙箱；npm scripts、项目代码和 Git 配置仍可能引发二级执行、访问工作区外或网络。',
+    description: mode === 'approval'
+      ? '提交任意 shell 命令，经用户审批后执行。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。'
+      : '直接执行任意 shell 命令，无需用户审批。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。',
     parameters: {
       type: 'object',
       properties: {
-        command_id: { type: 'string', enum: COMMAND_IDS }
+        command: { type: 'string', minLength: 1 }
       },
-      required: ['command_id'],
+      required: ['command'],
       additionalProperties: false
     },
     effect: 'write',
-    timeoutMs: commandTimeoutMs + EXECUTOR_GRACE_MS,
+    timeoutMs: approvalTimeoutMs + commandTimeoutMs + EXECUTOR_GRACE_MS,
     untrustedResult: true,
-    handler: async (args) => {
-      const commandId = (args as { command_id: CommandId }).command_id
-      const definition = COMMAND_DEFINITIONS[commandId]
-      const runtime = runtimes[commandId]
-
-      if (!definition || !runtime) {
-        throw new ToolError('invalid_args', '不支持的 command_id')
+    handler: async (args, context) => {
+      const command = (args as { command: string }).command
+      if (!command.trim()) {
+        throw new ToolError('invalid_args', '命令不能为空')
+      }
+      const request: CommandApprovalRequest = { command, cwd: workspace.root }
+      if (mode === 'approval') {
+        await requestApproval(
+          options.requestApproval as CommandApprovalHandler,
+          request,
+          context,
+          approvalTimeoutMs
+        )
       }
 
       const result = await runProcess({
-        executable: runtime.executable,
-        args: runtime.args,
+        command,
         cwd: workspace.root,
-        env: runtime.env,
+        env: environment,
         timeoutMs: commandTimeoutMs
       })
       const output: CommandResult = {
-        command_id: commandId,
+        command,
         exit_code: result.exitCode,
         signal: result.signal,
         timed_out: result.timedOut,
@@ -65,4 +87,42 @@ export async function createCommandTools(
   }]
 }
 
-export type { CommandId, CommandResult, CommandToolsOptions } from './types.js'
+async function requestApproval(
+  handler: CommandApprovalHandler,
+  request: CommandApprovalRequest,
+  context: ToolContext,
+  timeoutMs: number
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    const approved = await Promise.race([
+      Promise.resolve(handler(request, context)),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new ToolError('timeout', '等待用户审批超时'))
+        }, timeoutMs)
+        timer.unref()
+      })
+    ])
+    if (!approved) {
+      throw new ToolError('forbidden', '用户拒绝执行该命令')
+    }
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+function positiveTimeout(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new TypeError(`${name} 必须是正数`)
+  }
+  return value
+}
+
+export type {
+  CommandApprovalHandler,
+  CommandApprovalRequest,
+  CommandExecutionMode,
+  CommandResult,
+  CommandToolsOptions
+} from './types.js'
