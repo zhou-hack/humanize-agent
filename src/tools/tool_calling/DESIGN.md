@@ -234,7 +234,7 @@ const executor = new ToolExecutor(registry)
 
 | mode | 行为 |
 | --- | --- |
-| `workspace` | 默认值。注册 `effect = read` 的受限只读命令工具，直接放行精确白名单，不经过 shell，也不触发人工审批 |
+| `workspace` | 默认值。注册 `effect = read` 的受限只读命令工具，直接放行精确白名单，不经过 shell，也不触发人工审批；提供 `commandJudge` 时白名单外命令改为自动审核，工具整体使用 `effect = write` |
 | `approval` | 继承 workspace 的全部能力；只读白名单直接执行，白名单外任意 shell 命令才等待 `requestApproval` 批准，工具整体使用 `effect = write` |
 | `open` | 注册 `effect = write` 的任意 shell 命令工具，无需审批直接执行 |
 
@@ -264,6 +264,17 @@ const executor = new ToolExecutor(registry)
 - 返回 `command`、`exit_code`、`signal`、`timed_out`、`truncated`、`stdout`、`stderr`。非零退出和已终止的超时是结构化执行结果；启动失败才返回受控工具错误。
 
 **三种模式都不替代 OS 沙箱。** `workspace` 的白名单、路径预检和固定 argv 只约束这一工具入口，不承诺消除原生程序漏洞、配置加载、TOCTOU、资源耗尽等风险；`approval/open` 的任意命令还可访问工作区外、网络和系统资源。精简环境也不保证秘密不会被子进程从磁盘读取或输出，强隔离仍由后续 OS 沙箱负责。
+
+#### workspace 命令自动审核
+
+`createCommandTools({ mode: 'workspace', commandJudge })` 可选注入 `CommandJudge`（`{ timeoutMs, review({ command, cwd }) }`），仅在 `workspace` 生效，`approval/open` 忽略。只读解析失败时：
+
+- `sensitive` 错误直接返回，不交给审核；其余解析/预检失败调用 `review`。
+- `dangerous=false` 时以系统 shell 在工作区执行（与 `readonly` 无关），结果附带 `review: { readonly, dangerous }`；`dangerous=true` 返回 `forbidden`，提示改用仅限工作区的做法或切换 `approval`。
+- 审核超时返回 `timeout`，调用失败、无有效 JSON 或回显 `command` 与原文不一致返回 `internal`，均不启动进程。
+- 启用后工具 `effect = write`，`timeoutMs` = 审核超时 + 命令超时 + 宽限。
+
+`createLlmCommandJudge({ llm })` 基于任意 `LlmClient` 实现，每次审核都是独立的 `complete` 请求：只发送判定系统提示和命令原文（作为 user 数据），不带会话历史、记忆或工具，结果不写入对话记录。系统提示包含只读/危险判定标准、执行 shell、当前工作区路径，以及「显式读写工作区外路径、全局安装或全局配置视为 dangerous」的边界规则；解析时忽略 `<think>` 块和代码围栏。CLI/WebUI 直接复用 Agent 主模型的 `LlmClient` 装配审核器，默认超时 30 秒，无额外环境变量。审核是模型判断，可被误判或绕过，不构成安全边界。
 
 ### `web_search`
 

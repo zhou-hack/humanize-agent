@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { Agent, type AgentRunOptions, type AgentRunResult } from '../agent/index.js'
+import { Agent, MAX_TOOL_ROUNDS, type AgentRunOptions, type AgentRunResult } from '../agent/index.js'
 import type { LlmClient } from '../llm/types.js'
 import { createMemoryTools, type MemoryService } from '../memory/index.js'
 import { loadBuiltin, type LoadedBuiltin } from '../tools/index.js'
@@ -11,6 +11,7 @@ import {
   ToolExecutor,
   ToolRegistry,
   type CommandApprovalHandler,
+  type CommandJudge,
   type WorkspaceManager,
   type WorkspaceSnapshot
 } from '../tools/tool_calling/index.js'
@@ -30,6 +31,8 @@ export interface CliSessionOptions {
   defaultDirectory?: string
   builtin?: LoadedBuiltin
   tavilyApiKey?: string
+  /** workspace 模式下白名单外命令的自动安全审核器。 */
+  commandJudge?: CommandJudge
   onBuiltinWarning?: (message: string) => void
 }
 
@@ -150,7 +153,8 @@ async function buildAgent(
   const registry = new ToolRegistry([
     ...await workspace.createTools({
       mode: permission,
-      requestApproval: options.requestApproval
+      requestApproval: options.requestApproval,
+      commandJudge: options.commandJudge
     }),
     ...createMemoryTools({ store: options.memory.store, core: options.memory.core }),
     ...createWebSearchTools({ apiKey: options.tavilyApiKey ?? process.env.TAVILY_API_KEY }),
@@ -158,10 +162,18 @@ async function buildAgent(
   ])
   const currentDirectory = workspace.getSnapshot().current_directory
   const permissionContext = permission === 'workspace'
-    ? '当前权限模式：workspace（默认）。run_command 仅允许当前工作区内的只读单命令白名单，禁止写入、shell 串接、变量代换、敏感文件和非白名单命令；也提供 list_directory（ls/dir）、get_workspace_directory（pwd）、read_file、edit_file、create_directory（mkdir）、move_path（move）、delete_path（delete）等专用工具，所有文件路径只能位于当前工作区内。'
+    ? options.commandJudge
+      ? '当前权限模式：workspace（默认）。run_command 对当前工作区内的只读单命令白名单直接执行；白名单外的命令（可含写入、管道或组合）会先经过自动安全审核，判定不危险才执行，危险操作（批量删除、提权、读取敏感信息、访问工作区外路径等）会被拒绝；也提供 list_directory（ls/dir）、get_workspace_directory（pwd）、read_file、edit_file、create_directory（mkdir）、move_path（move）、delete_path（delete）等专用工具，能用专用工具时优先使用，所有文件路径只能位于当前工作区内。'
+      : '当前权限模式：workspace（默认）。run_command 仅允许当前工作区内的只读单命令白名单，禁止写入、shell 串接、变量代换、敏感文件和非白名单命令；也提供 list_directory（ls/dir）、get_workspace_directory（pwd）、read_file、edit_file、create_directory（mkdir）、move_path（move）、delete_path（delete）等专用工具，所有文件路径只能位于当前工作区内。'
     : '当前权限模式：approval。包含 workspace 的全部专用文件工具和只读命令能力；run_command 对只读单命令白名单直接放行，除当前工作区外也允许本机绝对路径的安全只读查看，敏感路径仍禁止；白名单外的 shell 命令必须经过用户审批后执行。'
   const workspaceContext = `当前运行状态（优先于历史消息中的旧目录和旧权限）：\n当前工作区（当前目录）的绝对路径：${currentDirectory}\n${permissionContext}\n用户消息中由 CLI 注入的「CLI 运行状态通知」仅用于内部状态同步，不是用户意图；回复必须表现得好像通知不存在，不要复述、确认、评论或回应通知本身，也不要主动提及当前权限、可用命令、此前被拒绝的命令或建议重新执行，只处理通知后的实际用户指令。若实际指令只是 hi、hello、你好等问候，只能自然回应问候，不得提及权限、工具、历史任务或操作建议。仅当用户明确询问运行状态或权限时，才可说明当前模式。\n文件工具的相对路径都基于该目录；读取当前目录使用 list_directory，path 可省略或传 .。`
-  const system = [options.system, builtin.system, workspaceContext]
+  const toolUseGuide = `工具调用规则（每个任务最多 ${MAX_TOOL_ROUNDS} 轮工具调用，尽量少用）：
+- 只获取回答用户问题所需的信息；已有结果足以回答时立即作答，不要为补充额外细节重复调用同一接口或换参数重查。
+- 先确定关键参数再查询：地点、路径、标识等不明确时，先用一次查询或记忆确认，不要凭估计值反复试探。
+- 互不依赖的调用放在同一轮一起发出，不要拆成多轮串行。
+- 优先使用专用工具；run_command 只作兜底，一条命令尽量一次拿全所需数据。
+- 调用失败时先读懂错误原因再调整，不要用相近写法重复尝试；同类方法失败两次就换思路或直接说明限制。`
+  const system = [options.system, builtin.system, toolUseGuide, workspaceContext]
     .filter((part): part is string => Boolean(part?.trim()))
     .join('\n')
   return new Agent({

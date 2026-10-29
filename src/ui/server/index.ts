@@ -6,6 +6,7 @@ import { createLlmSummarizer } from '../../cli/summarize.js'
 import { createAnthropicClient, createOpenAIClient } from '../../llm/index.js'
 import type { LlmClient } from '../../llm/types.js'
 import { MemoryService } from '../../memory/index.js'
+import { createLlmCommandJudge } from '../../tools/tool_calling/index.js'
 import { createUiRuntime, type UiRuntime } from './app.js'
 
 const HOST = '127.0.0.1'
@@ -28,12 +29,14 @@ async function main(): Promise<void> {
       onSummaryError: (error) => printError('警告：会话总结失败', error)
     })
     const memoryService = memory
+    const commandJudge = createLlmCommandJudge({ llm })
     runtime = await createUiRuntime({
       memory: memoryService,
       createSession: (requestApproval) => createCliSession({
         memory: memoryService,
         llm,
         requestApproval,
+        commandJudge,
         system: DEFAULT_SYSTEM,
         onBuiltinWarning: (message) => {
           process.stderr.write(`警告：${message}\n`)

@@ -45,7 +45,7 @@ src/
 │       ├── registry.ts     #   工具注册与 Ajv 参数校验
 │       ├── executor.ts     #   调度、超时、读写串行屏障、结果截断
 │       ├── file_tools/     #   工作区文件工具
-│       ├── command_tools/  #   只读 argv 白名单与三档权限命令工具
+│       ├── command_tools/  #   只读 argv 白名单、三档权限命令工具与可选 LLM 命令审核
 │       ├── web_search.ts   #   Tavily 网页搜索工具
 │       └── workspace_manager.ts  # 默认目录与选择目录管理
 ├── memory/                 # 记忆模块，已完成
@@ -99,6 +99,7 @@ src/
 - 工作区写入：`edit_file`（精确替换、原子写入、乐观冲突检测）、`create_directory`（`mkdir`，父目录必须存在且不覆盖）、`move_path`（`move`，不覆盖目标且禁止移入自身）、`delete_path`（`delete`，默认删除文件或空目录，非空目录须显式 `recursive=true`）。所有源路径和目标路径都限制在当前工作区内，禁止删除根目录。
 - 命令工具三档权限：`workspace`（默认，注册 `effect=read` 的只读白名单 `run_command`）、`approval`（继承 workspace 的只读白名单并直接放行，仅白名单外的任意 shell 命令需审批）、`open`（任意 shell 命令直接执行）。审批会标记常见删除、移动和重命名命令为高风险并明确警告，但不自动允许或阻止命令。
 - `workspace` 只读命令采用 lexer + 逐命令参数 schema + 路径预检，只接受单命令 argv；非白名单命令、shell 管道/重定向/串接/代换、可写参数、包装器、分页器、未放行的网络命令和敏感路径均返回 `forbidden`，不会隐式升级为审批。路径必须留在当前工作区，递归预检默认上限 10000 项，`.env*`、私钥、凭据、`.git` 和运行时记忆禁止读取。`approval` 额外允许通过本机绝对路径只读查看工作区外的非敏感文件和目录，目标路径仍逐段拒绝符号链接/junction；非递归外部目录列表会跳过私密子项和链接而不跟随读取，`workspace` 的边界不变。
+- `workspace` 命令自动审核：CLI/WebUI 启动时用 Agent 主模型的同一个 `LlmClient` 创建审核器，白名单外的命令不再直接拒绝，而是向主模型发送一次独立的审核请求（只含判定系统提示与命令原文，不带会话历史、记忆和工具，不写入对话记录，也不计入工具轮数），返回 `{command, readonly, dangerous}`；`dangerous=false` 即以系统 shell 在工作区执行（只读或普通写入均可），`dangerous=true` 返回 `forbidden`。判定提示词注入当前工作区路径与执行 shell，读写工作区外路径、全局安装/配置视为危险；判定超时（默认 30 秒）、调用失败、JSON 无效或回显命令与原文不一致均拒绝执行（fail closed）。`sensitive` 路径拦截仍是确定性规则，不交给模型。启用后 `run_command` 的 `effect` 变为 `write`（串行执行），超时额外包含审核时间，结果附带 `review` 字段；`approval` 模式不受影响，白名单外仍走人工审批。该审核基于模型判断，不是 OS 沙箱。实现位于 `command_tools/command_judge.ts`。
 - 原生命令从可信 PATH 解析为绝对路径，通过 `shell:false` 固定 argv 执行；Windows `dir`、显示用 `cd`、`type`、`Get-Content`、`Select-String` 使用纯 Node 适配器，其中 `dir` 支持安全的 `/B`、`/S`、`/AD` 参数。Git 仅开放指定只读子命令，禁用分页器、fsmonitor、外部 diff/textconv，并隔离外部配置。该入口约束不构成 OS 沙箱。
 - `curl` 在 workspace/approval 共享白名单中仅放行单一 HTTP(S) URL 的 GET/HEAD，支持常用静默、重定向、header、User-Agent、HTTP(S) proxy 和超时参数，固定禁用其他协议与 URL globbing；上传、写文件、自定义方法、本地配置和 header 文件读取仍需按模式拒绝或审批。URL 与显式 header 会发送到外部服务，该能力不构成网络隔离。
 - Windows 超时终止进程树时，对 `taskkill` 未能终止的失败 PID 逐个兜底；仍失败则保留命令输出并返回 `termination_error`。
@@ -130,6 +131,7 @@ src/
 - `/permission [workspace|approval]` 无参在两档间切换、带参精确设置；实际权限发生变化时，会向切换后的下一条用户指令注入一次性「从原模式切换为当前模式」通知，后续指令不重复。该通知仅供模型内部状态同步，系统提示要求模型不复述、确认或回应通知本身，只处理实际用户指令；用户明确询问权限时才说明当前模式。`workspace` 无需审批即可使用受工作区边界约束的专用文件工具和只读白名单 `run_command`，但不开放任意 shell；`approval` 完整继承这些能力，只读白名单同样免审批，只有白名单外任意 shell 命令才在终端逐条审批，`open` 暂未开放。
 - CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用记忆与会话。
 - CLI 系统提示将当前工作区绝对路径、权限模式和 `run_command` 能力作为优先于历史消息的运行状态注入：`workspace` 明确 `run_command` 只允许当前工作区内的只读单命令白名单，禁止命令写入、shell 组合、代换、敏感文件及非白名单命令，同时仍提供专用文件写入工具；`approval` 明确包含 workspace 全部能力、白名单免审批及白名单外命令审批。`/cd` 或权限切换重建会话时使用最新状态，并明确相对路径基准、当前目录读取方式、专用工具优先和工作区边界。
+- CLI/WebUI 系统提示额外注入「工具调用规则」以减少冗余调用：告知每任务最多 8 轮工具，结果够用即作答、不为补充细节重复查询，先确认关键参数（如地点）再查询而非估值试探，互不依赖的调用同轮并发，专用工具优先、`run_command` 兜底，失败后理解原因再调整、同类方法失败两次即换思路。
 - 内置 bundle 只在 CLI 初始化时加载一次：`workspace` 仅注册 `effect=read` 的内置工具，`approval` 注册全部；`/cd` 和权限切换复用 MCP 连接，初始化失败及 REPL 退出统一幂等关闭。构建会复制 `SKILL.md` 和 JSON 到 `dist/data/tools/`。
 
 ### Web UI
@@ -143,7 +145,7 @@ src/
 
 ## 已验证能力
 
-本轮全量自动化验证：26 个测试文件共 364 项通过、2 项平台相关测试跳过，TypeScript 类型检查、后端生产构建与 Vue 编译均通过。覆盖严格归档失败保留现场、空标题归档与复合游标、只读历史 API、运行/归档互斥、新建防重复及失败不清空实时状态，以及此前的外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
+本轮全量自动化验证：27 个测试文件共 374 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建均通过。新增覆盖 workspace 命令审核的放行、拒绝、审核失败、敏感路径不送审、approval 不受影响，以及判定结果解析和审核请求与会话隔离；此前覆盖严格归档失败保留现场、空标题归档与复合游标、只读历史 API、运行/归档互斥、新建防重复及失败不清空实时状态，以及外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
 
 真实 API（非 mock）已验证：
 
@@ -163,6 +165,7 @@ src/
 - 真实 `approval` 命令工具执行 `dir /b /ad "C:\Users\Jinbin"` 返回零退出码、审批回调次数为 0；目录中的私密目录与 junction 被跳过，未跟随读取。
 - 生产 Web UI 服务已直接验证：`GET /` 从 `dist/ui/web/` 返回 200 与 HTML，`GET /api/state` 返回真实默认工作区和 workspace 状态；真实 `POST /api/runs` 通过 SSE 依次返回 `run_start → message_delta(UI_OK) → run_end(done)` 及真实 token 用量，验证后服务已关闭。
 - 独立生产实例已验证 `/api/directories` 能读取真实目录，`/api/workspace` 能切换到另一真实目录并恢复原工作区；验证使用临时本机端口，结束后实例已关闭。
+- 命令审核复用主模型（Anthropic 协议 → MiniMax `MiniMax-M3.1-Flash`）以独立请求逐条验证，单次约 1–2 秒：`echo hello > note.txt`、`curl` GET 判为不危险而放行；`rd /s /q .`、写入 `C:\Windows` 判为危险而拒绝；内嵌「忽略上文」与伪造 JSON 的命令仍按命令本身判定。此前经 chat/completions 直连同一模型也验证了 `npm install` 放行，读取 SSH 私钥与 `del ..\secret.txt` 拒绝。
 - 使用真实 `MemoryService`、内存 SQLite 和独立生产实例完成两轮归档：两条归档均保存非空标题/摘要并出现在 `/api/history`，只读消息完整返回且当前会话 ID 不变；模拟总结失败时接口返回错误，旧会话保持 active 且不创建新会话。验证实例与临时文件已清理。
 
 ## 下一步

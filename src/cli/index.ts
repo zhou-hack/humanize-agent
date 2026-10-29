@@ -4,6 +4,7 @@ import { loadEnvFile } from 'node:process'
 import { createAnthropicClient, createOpenAIClient } from '../llm/index.js'
 import type { LlmClient } from '../llm/types.js'
 import { MemoryService } from '../memory/index.js'
+import { createLlmCommandJudge } from '../tools/tool_calling/index.js'
 import { runRepl } from './repl.js'
 import { createCliSession } from './session.js'
 import { createLlmSummarizer } from './summarize.js'
@@ -38,11 +39,13 @@ async function main(): Promise<void> {
       }
     })
     const memoryService = memory
+    const commandJudge = createLlmCommandJudge({ llm })
     await runRepl({
       createSession: (requestApproval) => createCliSession({
         memory: memoryService,
         llm,
         requestApproval,
+        commandJudge,
         system: DEFAULT_SYSTEM,
         onBuiltinWarning: (message) => {
           process.stderr.write(`警告：${message}\n`)
