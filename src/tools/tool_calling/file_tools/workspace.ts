@@ -22,6 +22,11 @@ export interface WorkspaceEntry extends WorkspaceFile {
   readonly type: 'file' | 'directory' | 'other'
 }
 
+export interface WorkspaceDestination {
+  readonly absolutePath: string
+  readonly relativePath: string
+}
+
 export async function createWorkspace(workspaceRoot: string): Promise<Workspace> {
   if (!path.isAbsolute(workspaceRoot)) {
     throw new TypeError('workspaceRoot 必须是绝对路径')
@@ -57,6 +62,22 @@ export async function resolveWorkspaceDirectory(
     throw new ToolError('unsupported_file', '目标不是目录')
   }
   return entry
+}
+
+export async function resolveWorkspaceDestination(
+  workspace: Workspace,
+  inputPath: string
+): Promise<WorkspaceDestination> {
+  const segments = parseRelativePath(inputPath, false)
+  const parentPath = segments.slice(0, -1).join('/') || '.'
+  const parent = await resolveWorkspaceDirectory(workspace, parentPath)
+  const name = segments.at(-1) as string
+  const absolutePath = path.resolve(parent.absolutePath, name)
+
+  if (!isWithin(workspace.root, absolutePath)) {
+    throw new ToolError('forbidden', '目标路径超出工作区')
+  }
+  return { absolutePath, relativePath: segments.join('/') }
 }
 
 export async function resolveWorkspaceEntry(

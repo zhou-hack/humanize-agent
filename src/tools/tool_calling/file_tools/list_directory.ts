@@ -51,6 +51,7 @@ export function createListDirectoryTool(workspace: Workspace): ToolDefinition {
       const nextOffset = offset + page.length
       return {
         path: directory.relativePath,
+        workspace_root: workspace.root,
         offset,
         next_offset: nextOffset,
         has_more: nextOffset < sorted.length,

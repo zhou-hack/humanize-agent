@@ -113,11 +113,16 @@ async function buildAgent(
     }),
     ...createMemoryTools({ store: options.memory.store, core: options.memory.core })
   ])
+  const currentDirectory = workspace.getSnapshot().current_directory
+  const permissionContext = permission === 'workspace'
+    ? '当前权限模式：workspace（默认）。run_command 未注册，不能执行 shell 或 git，不要尝试调用它。可以使用 list_directory（ls/dir）、get_workspace_directory（pwd）、read_file、edit_file、create_directory（mkdir）、move_path（move）、delete_path（delete）等专用工具；所有文件路径只能位于当前工作区内。'
+    : '当前权限模式：approval。run_command 已注册，命令必须经过用户审批后执行。'
+  const workspaceContext = `当前运行状态（优先于历史消息中的旧目录和旧权限）：\n当前工作区（当前目录）的绝对路径：${currentDirectory}\n${permissionContext}\n文件工具的相对路径都基于该目录；读取当前目录使用 list_directory，path 可省略或传 .。`
   return new Agent({
     memory: options.memory,
     llm: options.llm,
     registry,
     executor: new ToolExecutor(registry),
-    system: options.system
+    system: options.system ? `${options.system}\n${workspaceContext}` : workspaceContext
   })
 }
