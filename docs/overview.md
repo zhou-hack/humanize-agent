@@ -97,9 +97,9 @@ src/
 - 统一 `ToolDefinition` 协议，`effect: read / write / send` 决定并行与串行屏障。
 - 文件读取与查询：`get_workspace_directory`（`pwd`）、`list_directory`（`ls/dir`，省略 `path` 或传 `.` 读取当前目录，并返回 `workspace_root`）、`read_file`（字节分页或 inclusive 行范围）、`search_text`、`stat_path`、`find_path`。
 - 工作区写入：`edit_file`（精确替换、原子写入、乐观冲突检测）、`create_directory`（`mkdir`，父目录必须存在且不覆盖）、`move_path`（`move`，不覆盖目标且禁止移入自身）、`delete_path`（`delete`，默认删除文件或空目录，非空目录须显式 `recursive=true`）。所有源路径和目标路径都限制在当前工作区内，禁止删除根目录。
-- 命令工具三档权限：`workspace`（默认，注册 `effect=read` 的只读白名单 `run_command`）、`approval`（继承 workspace 的只读白名单并直接放行，仅白名单外的任意 shell 命令需审批）、`open`（任意 shell 命令直接执行）。审批会标记常见删除、移动和重命名命令为高风险并明确警告，但不自动允许或阻止命令。
+- 命令工具三档权限：`workspace`（默认，只读白名单 `run_command`，白名单外命令经模型审核不危险才执行）、`approval`（继承 workspace 的只读白名单并直接放行，白名单外命令经模型审核不危险直接执行，危险或审核失败才需审批）、`open`（任意 shell 命令直接执行）。审批会标记常见删除、移动和重命名命令以及模型判定危险的命令为高风险并明确警告。
 - `workspace` 只读命令采用 lexer + 逐命令参数 schema + 路径预检，只接受单命令 argv；非白名单命令、shell 管道/重定向/串接/代换、可写参数、包装器、分页器、未放行的网络命令和敏感路径均返回 `forbidden`，不会隐式升级为审批。路径必须留在当前工作区，递归预检默认上限 10000 项，`.env*`、私钥、凭据、`.git` 和运行时记忆禁止读取。`approval` 额外允许通过本机绝对路径只读查看工作区外的非敏感文件和目录，目标路径仍逐段拒绝符号链接/junction；非递归外部目录列表会跳过私密子项和链接而不跟随读取，`workspace` 的边界不变。
-- `workspace` 命令自动审核：CLI/WebUI 启动时用 Agent 主模型的同一个 `LlmClient` 创建审核器，白名单外的命令不再直接拒绝，而是向主模型发送一次独立的审核请求（只含判定系统提示与命令原文，不带会话历史、记忆和工具，不写入对话记录，也不计入工具轮数），返回 `{command, readonly, dangerous}`；`dangerous=false` 即以系统 shell 在工作区执行（只读或普通写入均可），`dangerous=true` 返回 `forbidden`。判定提示词注入当前工作区路径与执行 shell，读写工作区外路径、全局安装/配置视为危险；判定超时（默认 30 秒）、调用失败、JSON 无效或回显命令与原文不一致均拒绝执行（fail closed）。`sensitive` 路径拦截仍是确定性规则，不交给模型。启用后 `run_command` 的 `effect` 变为 `write`（串行执行），超时额外包含审核时间，结果附带 `review` 字段；`approval` 模式不受影响，白名单外仍走人工审批。该审核基于模型判断，不是 OS 沙箱。实现位于 `command_tools/command_judge.ts`。
+- `workspace/approval` 命令自动审核：CLI/WebUI 启动时用 Agent 主模型的同一个 `LlmClient` 创建审核器，白名单外的命令先向主模型发送一次独立的审核请求（只含判定系统提示与命令原文，不带会话历史、记忆和工具，不写入对话记录，也不计入工具轮数），返回 `{command, readonly, dangerous}`。`workspace`：`dangerous=false` 即以系统 shell 在工作区执行（只读或普通写入均可），`dangerous=true` 返回 `forbidden`，审核超时（默认 30 秒）、调用失败、JSON 无效或回显命令与原文不一致均拒绝执行（fail closed）。`approval`：`dangerous=false` 同样直接执行、不再打扰用户，只有 `dangerous=true`（审批卡片标记为高风险）或审核失败时才转人工审批，审核失败不会自动放行。判定提示词注入当前工作区路径与执行 shell，读写工作区外路径、全局安装/配置视为危险；`sensitive` 路径不送审（`workspace` 直接拒绝，`approval` 直接转人工审批）。启用后 `run_command` 的 `effect` 为 `write`（串行执行），超时额外包含审核时间，结果附带 `review` 字段。该审核基于模型判断，不是 OS 沙箱。实现位于 `command_tools/command_judge.ts`。
 - 原生命令从可信 PATH 解析为绝对路径，通过 `shell:false` 固定 argv 执行；Windows `dir`、显示用 `cd`、`type`、`Get-Content`、`Select-String` 使用纯 Node 适配器，其中 `dir` 支持安全的 `/B`、`/S`、`/AD` 参数。Git 仅开放指定只读子命令，禁用分页器、fsmonitor、外部 diff/textconv，并隔离外部配置。该入口约束不构成 OS 沙箱。
 - `curl` 在 workspace/approval 共享白名单中仅放行单一 HTTP(S) URL 的 GET/HEAD，支持常用静默、重定向、header、User-Agent、HTTP(S) proxy 和超时参数，固定禁用其他协议与 URL globbing；上传、写文件、自定义方法、本地配置和 header 文件读取仍需按模式拒绝或审批。URL 与显式 header 会发送到外部服务，该能力不构成网络隔离。
 - Windows 超时终止进程树时，对 `taskkill` 未能终止的失败 PID 逐个兜底；仍失败则保留命令输出并返回 `termination_error`。
@@ -128,7 +128,7 @@ src/
 - 默认上下文预算为 10 万字符，优先压缩旧工具结果并保持调用配对；原始 SQLite 消息不修改。
 - `npm run cli` 构建并启动交互 CLI。默认工作区：Windows 为 `~/Documents/humanize-agent-work`，Linux/macOS 为 `~/humanize-agent-work`，启动时自动创建。
 - `/cd <路径>` 切换已存在目录，相对路径基于当前工作区；切换会重建工具，失败时保留原工作区。
-- `/permission [workspace|approval]` 无参在两档间切换、带参精确设置；实际权限发生变化时，会向切换后的下一条用户指令注入一次性「从原模式切换为当前模式」通知，后续指令不重复。该通知仅供模型内部状态同步，系统提示要求模型不复述、确认或回应通知本身，只处理实际用户指令；用户明确询问权限时才说明当前模式。`workspace` 无需审批即可使用受工作区边界约束的专用文件工具和只读白名单 `run_command`，但不开放任意 shell；`approval` 完整继承这些能力，只读白名单同样免审批，只有白名单外任意 shell 命令才在终端逐条审批，`open` 暂未开放。
+- `/permission [workspace|approval]` 无参在两档间切换、带参精确设置；实际权限发生变化时，会向切换后的下一条用户指令注入一次性「从原模式切换为当前模式」通知，后续指令不重复。该通知仅供模型内部状态同步，系统提示要求模型不复述、确认或回应通知本身，只处理实际用户指令；用户明确询问权限时才说明当前模式。`workspace` 无需审批即可使用受工作区边界约束的专用文件工具和只读白名单 `run_command`，但不开放任意 shell；`approval` 完整继承这些能力，只读白名单同样免审批，白名单外命令经模型审核不危险直接执行，只有判定危险或审核失败的命令才在终端逐条审批，`open` 暂未开放。
 - CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用记忆与会话。
 - CLI 系统提示将当前工作区绝对路径、权限模式和 `run_command` 能力作为优先于历史消息的运行状态注入：`workspace` 明确 `run_command` 只允许当前工作区内的只读单命令白名单，禁止命令写入、shell 组合、代换、敏感文件及非白名单命令，同时仍提供专用文件写入工具；`approval` 明确包含 workspace 全部能力、白名单免审批及白名单外命令审批。`/cd` 或权限切换重建会话时使用最新状态，并明确相对路径基准、当前目录读取方式、专用工具优先和工作区边界。
 - CLI/WebUI 系统提示额外注入「工具调用规则」以减少冗余调用：告知每任务最多 8 轮工具，结果够用即作答、不为补充细节重复查询，先确认关键参数（如地点）再查询而非估值试探，互不依赖的调用同轮并发，专用工具优先、`run_command` 兜底，失败后理解原因再调整、同类方法失败两次即换思路。
@@ -145,7 +145,7 @@ src/
 
 ## 已验证能力
 
-本轮全量自动化验证：27 个测试文件共 374 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建均通过。新增覆盖 workspace 命令审核的放行、拒绝、审核失败、敏感路径不送审、approval 不受影响，以及判定结果解析和审核请求与会话隔离；此前覆盖严格归档失败保留现场、空标题归档与复合游标、只读历史 API、运行/归档互斥、新建防重复及失败不清空实时状态，以及外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
+本轮全量自动化验证：27 个测试文件共 374 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建均通过。新增覆盖 workspace/approval 命令审核的放行、拒绝、危险转审批、审核失败、敏感路径不送审，以及判定结果解析和审核请求与会话隔离；此前覆盖严格归档失败保留现场、空标题归档与复合游标、只读历史 API、运行/归档互斥、新建防重复及失败不清空实时状态，以及外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
 
 真实 API（非 mock）已验证：
 

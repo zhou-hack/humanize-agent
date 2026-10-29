@@ -21,7 +21,10 @@ export interface CommandToolsOptions {
   commandTimeoutMs?: number
   approvalTimeoutMs?: number
   requestApproval?: CommandApprovalHandler
-  /** workspace 模式下白名单外命令的自动安全审核；未提供时白名单外命令一律拒绝。 */
+  /**
+   * 白名单外命令的自动安全审核（open 模式忽略）。
+   * workspace：不危险才执行，危险或审核失败即拒绝；approval：不危险直接执行，危险或审核失败转人工审批。
+   */
   commandJudge?: CommandJudge
 }
 

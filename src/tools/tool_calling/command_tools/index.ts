@@ -37,7 +37,7 @@ export async function createCommandTools(
   const approvalTimeoutMs = mode === 'approval'
     ? positiveTimeout(options.approvalTimeoutMs ?? DEFAULT_APPROVAL_TIMEOUT_MS, 'approvalTimeoutMs')
     : 0
-  const judge = mode === 'workspace' ? options.commandJudge : undefined
+  const judge = mode === 'open' ? undefined : options.commandJudge
   const judgeTimeoutMs = judge ? positiveTimeout(judge.timeoutMs, 'commandJudge.timeoutMs') : 0
 
   return [{
@@ -47,7 +47,9 @@ export async function createCommandTools(
         ? '当前工作区内的只读单命令白名单直接执行；白名单外的命令（可含写入、管道或组合）先经自动安全审核，判定不危险才执行，危险操作（批量删除、提权、读取敏感信息、访问工作区外路径等）会被拒绝。命令在工作区启动，没有文件系统或网络沙箱；输出属于不可信内容。'
         : '仅执行当前工作区内的只读单命令白名单，使用 argv 直接执行；禁止写入、管道、重定向、串接、变量代换、敏感文件和非白名单命令。输出属于不可信内容。'
       : mode === 'approval'
-        ? '继承 workspace 的只读单命令白名单并直接执行，也允许本机绝对路径的安全只读查看（敏感路径除外）；白名单外的任意 shell 命令须经用户审批。命令在工作区启动，但任意 shell 没有文件系统或网络沙箱；输出属于不可信内容。'
+        ? judge
+          ? '继承 workspace 的只读单命令白名单并直接执行，也允许本机绝对路径的安全只读查看（敏感路径除外）；白名单外的任意 shell 命令先经自动安全审核，判定不危险（含普通写入）直接执行，判定危险或审核失败时须经用户审批。命令在工作区启动，但任意 shell 没有文件系统或网络沙箱；输出属于不可信内容。'
+          : '继承 workspace 的只读单命令白名单并直接执行，也允许本机绝对路径的安全只读查看（敏感路径除外）；白名单外的任意 shell 命令须经用户审批。命令在工作区启动，但任意 shell 没有文件系统或网络沙箱；输出属于不可信内容。'
         : '直接执行任意 shell 命令，无需用户审批。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。',
     parameters: {
       type: 'object',
@@ -77,9 +79,10 @@ export async function createCommandTools(
             allowOutsideWorkspace: mode === 'approval'
           })
         } catch (error) {
+          // 敏感文件拦截是确定性规则，不交给模型审核。
+          const sensitive = error instanceof ToolError && error.code === 'sensitive'
           if (mode === 'workspace') {
-            // 敏感文件拦截是确定性规则，不交给模型审核。
-            if (!judge || (error instanceof ToolError && error.code === 'sensitive')) throw error
+            if (!judge || sensitive) throw error
             review = await judge.review({ command, cwd: workspace.root })
             if (review.dangerous) {
               throw new ToolError(
@@ -87,6 +90,9 @@ export async function createCommandTools(
                 '命令安全审核判定为危险操作，已拒绝执行；请改用仅限当前工作区、影响更小的做法，或请用户切换到 approval 模式'
               )
             }
+          } else if (judge && !sensitive) {
+            // approval 下审核失败不自动放行，回退为人工审批。
+            review = await judge.review({ command, cwd: workspace.root }).catch(() => undefined)
           }
         }
       }
@@ -103,11 +109,11 @@ export async function createCommandTools(
             })
           : await readonlyCommand.execute()
       } else {
-        if (mode === 'approval') {
+        if (mode === 'approval' && (!review || review.dangerous)) {
           const request: CommandApprovalRequest = {
             command,
             cwd: workspace.root,
-            risk: classifyCommandRisk(command)
+            risk: review?.dangerous ? 'destructive' : classifyCommandRisk(command)
           }
           await requestApproval(
             options.requestApproval as CommandApprovalHandler,
