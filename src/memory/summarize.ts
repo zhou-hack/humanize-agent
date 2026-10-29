@@ -76,15 +76,15 @@ export class MemorySummaryScheduler {
     }
   }
 
-  async closeConversation(conversationId: string): Promise<void> {
+  async closeConversation(conversationId: string, requireSummary = false): Promise<void> {
     this.cancel(conversationId)
     try {
       await this.summarizeNow(conversationId)
     } catch (error) {
       this.onError(error, conversationId)
-    } finally {
-      this.store.closeConversation(conversationId)
+      if (requireSummary) throw error
     }
+    this.store.closeConversation(conversationId)
   }
 
   cancel(conversationId: string): void {

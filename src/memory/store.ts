@@ -131,6 +131,25 @@ export class MemoryStore {
       .all().map(mapConversation)
   }
 
+  listClosedConversations(options: {
+    limit: number
+    before?: { lastMessageAt: number; id: string }
+  }): Conversation[] {
+    const conditions = ["status = 'closed'"]
+    const parameters: Array<string | number> = []
+    if (options.before) {
+      conditions.push('(last_message_at < ? OR (last_message_at = ? AND id < ?))')
+      parameters.push(options.before.lastMessageAt, options.before.lastMessageAt, options.before.id)
+    }
+    parameters.push(options.limit)
+    return this.db.prepare(`
+      SELECT * FROM conversations
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY last_message_at DESC, id DESC
+      LIMIT ?
+    `).all(...parameters).map(mapConversation)
+  }
+
   closeConversation(id: string): void {
     const result = this.db.prepare("UPDATE conversations SET status = 'closed' WHERE id = ?").run(id)
     if (result.changes === 0) {
@@ -405,6 +424,8 @@ export class MemoryStore {
           ON messages(conversation_id, id);
         CREATE INDEX IF NOT EXISTS conversations_last_message_at
           ON conversations(last_message_at DESC);
+        CREATE INDEX IF NOT EXISTS conversations_status_last_message_at_id
+          ON conversations(status, last_message_at DESC, id DESC);
 
         CREATE TABLE IF NOT EXISTS stickers (
           id TEXT PRIMARY KEY,

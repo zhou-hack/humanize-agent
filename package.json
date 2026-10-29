@@ -11,7 +11,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cli": "npm run build && node dist/cli/index.js"
+    "cli": "npm run build && node dist/cli/index.js",
+    "ui": "npm run ui:build && node dist/ui/server/index.js",
+    "ui:build": "npm run build && npm --prefix src/ui run build",
+    "ui:api": "npm run build && node dist/ui/server/index.js",
+    "ui:dev": "npm --prefix src/ui run dev"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",

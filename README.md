@@ -17,7 +17,7 @@ humanize-agent 让 Agent 在持续交互中保留有价值的信息，并在后�
 - Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 三种协议适配。
 - 连续对话、流式输出、会话恢复、工具调用和中断取消。
 - 工作区内读取、编辑、查找、建目录、移动和删除文件。
-- 默认无 shell 的 `workspace` 模式，以及逐条审批命令的 `approval` 模式。
+- 默认仅放行工作区只读白名单命令的 `workspace` 模式，以及继承白名单、仅审批其他 shell 命令的 `approval` 模式。
 
 ## 环境要求
 
@@ -85,11 +85,50 @@ npm run cli
 
 ### 权限模式
 
-- `workspace`（默认）：不注册 shell 或 git。提供 `ls/dir`、`pwd`、读取、编辑、搜索、`mkdir`、移动和删除等专用工具，所有文件操作都限制在当前工作区内。
-- `approval`：额外注册 `run_command`，每条 shell 命令都需要人工审批。shell 不构成文件系统或网络沙箱，审批前应核对命令和目录。
-- `open`：暂未在 CLI 开放。
+- `workspace`（默认）：提供读取、编辑、搜索、`mkdir`、移动和删除等专用文件工具，同时注册受限的只读 `run_command`。例如 `pwd`、`ls`、`cat`、`rg` 和 `git status` 等白名单命令无需审批；所有路径参数都限制在当前工作区内。
+- `approval`：包含 `workspace` 的全部专用文件工具和只读命令能力。同一套只读白名单无需审批；只有白名单外的任意 shell 命令才需要人工审批，审批前应核对完整命令、工作目录和高风险警告。
+- `open`：任意 shell 命令无需审批直接执行，暂未在 CLI 开放。
 
-非空目录只有显式设置 `recursive=true` 才能递归删除；禁止删除工作区根目录、越界操作和覆盖已有移动目标。
+`workspace` 的 `run_command` 只接受单命令 argv，不经过 shell；管道、重定向、串接、命令/变量代换、非白名单命令和可写参数都会返回 `forbidden`，不会自动转为审批。`find -exec`、`sed -i`、`awk`、分页器、命令包装器及 `wget` 等不在直接放行范围内。敏感路径（如 `.env*`、私钥、凭据、`.git` 和运行时记忆）也会被拒绝。Git 仅开放指定只读子命令并隔离外部配置；Windows 的 `dir`、显示用 `cd`、`type`、`Get-Content`、`Select-String` 由 Node 适配器实现，不调用 `cmd` 或 PowerShell。
+
+`curl` 只对单一 HTTP(S) URL 的 GET/HEAD 放开，支持常用的静默、错误、重定向、header、User-Agent、HTTP(S) proxy 和超时参数；固定禁止其他协议和 URL globbing。上传、写文件、自定义请求方法、本地配置及从文件读取 header 仍不会免审批。该放行允许向外部服务发送 URL 和显式 header，不等于网络隔离。
+
+非空目录只有显式设置 `recursive=true` 才能递归删除；禁止删除工作区根目录、越界操作和覆盖已有移动目标。受限 argv 和路径预检不是 OS 沙箱；`approval/open` 的任意 shell 更不构成文件系统或网络安全边界。
+
+## Web UI
+
+首次使用先安装 UI 依赖：
+
+```bash
+npm --prefix src/ui install
+```
+
+构建并启动真实 Agent Web UI：
+
+```bash
+npm run ui
+```
+
+打开 `http://127.0.0.1:3210`。生产服务器仅监听本机，直接托管 `dist/ui/web/`，API 密钥、工作区文件和 SQLite 均留在 Node 服务端。已接通连续对话、流式文本、真实工具轨迹、人工审批、停止、新对话及 `workspace/approval` 切换；mock、模拟思考、产物预览和历史/工具管理占位已移除。
+
+开发模式分别启动后端和 Vite：
+
+```bash
+npm run ui:api   # http://127.0.0.1:3210
+npm run ui:dev   # http://127.0.0.1:5173，/api 自动代理到后端
+```
+
+仅编译产物可执行 `npm run ui:build`，后端输出到 `dist/ui/server/`，前端输出到 `dist/ui/web/`。
+
+## 网页搜索（可选）
+
+在 `.env` 中配置 Tavily API Key：
+
+```dotenv
+TAVILY_API_KEY=tvly-your-api-key
+```
+
+配置后，CLI 在 `workspace` 和 `approval` 中都会注册 `web_search`；未配置或值为空时不注册，不影响其他功能。工具支持 `query`、`max_results`（默认 5，范围 1–20）、`search_depth`（`basic/advanced/fast/ultra-fast`）和 `include_answer`。请求使用 Bearer 认证和 30 秒超时，只返回标题、链接、摘要及可选 answer，不获取原始网页内容；搜索响应按不可信外部内容处理。
 
 ## 内置 Skill 与 MCP
 

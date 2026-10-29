@@ -3,11 +3,13 @@ import { createWorkspace } from '../file_tools/workspace.js'
 import type { ToolContext, ToolDefinition } from '../types.js'
 import { resolveCommandEnvironment } from './executables.js'
 import { runProcess } from './process_runner.js'
+import { resolveReadonlyCommand, type ResolvedReadonlyCommand } from './readonly_commands.js'
 import type {
   CommandApprovalHandler,
   CommandApprovalRequest,
   CommandResult,
-  CommandToolsOptions
+  CommandToolsOptions,
+  ProcessResult
 } from './types.js'
 
 const DEFAULT_COMMAND_TIMEOUT_MS = 60_000
@@ -21,7 +23,6 @@ export async function createCommandTools(
   if (mode !== 'workspace' && mode !== 'approval' && mode !== 'open') {
     throw new TypeError('未知命令权限模式')
   }
-  if (mode === 'workspace') return []
   if (mode === 'approval' && !options.requestApproval) {
     throw new TypeError('approval 模式必须提供 requestApproval')
   }
@@ -38,9 +39,11 @@ export async function createCommandTools(
 
   return [{
     name: 'run_command',
-    description: mode === 'approval'
-      ? '提交任意 shell 命令，经用户审批后执行。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。'
-      : '直接执行任意 shell 命令，无需用户审批。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。',
+    description: mode === 'workspace'
+      ? '仅执行当前工作区内的只读单命令白名单，使用 argv 直接执行；禁止写入、管道、重定向、串接、变量代换、敏感文件和非白名单命令。输出属于不可信内容。'
+      : mode === 'approval'
+        ? '继承 workspace 的只读单命令白名单并直接执行，也允许本机绝对路径的安全只读查看（敏感路径除外）；白名单外的任意 shell 命令须经用户审批。命令在工作区启动，但任意 shell 没有文件系统或网络沙箱；输出属于不可信内容。'
+        : '直接执行任意 shell 命令，无需用户审批。命令在工作区启动，但没有文件系统或网络沙箱；输出属于不可信内容。',
     parameters: {
       type: 'object',
       properties: {
@@ -49,7 +52,7 @@ export async function createCommandTools(
       required: ['command'],
       additionalProperties: false
     },
-    effect: 'write',
+    effect: mode === 'workspace' ? 'read' : 'write',
     timeoutMs: approvalTimeoutMs + commandTimeoutMs + EXECUTOR_GRACE_MS,
     untrustedResult: true,
     handler: async (args, context) => {
@@ -57,26 +60,54 @@ export async function createCommandTools(
       if (!command.trim()) {
         throw new ToolError('invalid_args', '命令不能为空')
       }
-      const request: CommandApprovalRequest = {
-        command,
-        cwd: workspace.root,
-        risk: classifyCommandRisk(command)
-      }
-      if (mode === 'approval') {
-        await requestApproval(
-          options.requestApproval as CommandApprovalHandler,
-          request,
-          context,
-          approvalTimeoutMs
-        )
+
+      let readonlyCommand: ResolvedReadonlyCommand | undefined
+      if (mode !== 'open') {
+        try {
+          readonlyCommand = await resolveReadonlyCommand(command, {
+            workspace,
+            trustedPath: environment.PATH,
+            maxOutputBytes: 1024,
+            allowOutsideWorkspace: mode === 'approval'
+          })
+        } catch (error) {
+          if (mode === 'workspace') throw error
+        }
       }
 
-      const result = await runProcess({
-        command,
-        cwd: workspace.root,
-        env: environment,
-        timeoutMs: commandTimeoutMs
-      })
+      let result: ProcessResult
+      if (readonlyCommand) {
+        result = readonlyCommand.kind === 'process'
+          ? await runProcess({
+              executable: readonlyCommand.executable,
+              args: readonlyCommand.args,
+              cwd: workspace.root,
+              env: environment,
+              timeoutMs: commandTimeoutMs
+            })
+          : await readonlyCommand.execute()
+      } else {
+        if (mode === 'approval') {
+          const request: CommandApprovalRequest = {
+            command,
+            cwd: workspace.root,
+            risk: classifyCommandRisk(command)
+          }
+          await requestApproval(
+            options.requestApproval as CommandApprovalHandler,
+            request,
+            context,
+            approvalTimeoutMs
+          )
+        }
+        result = await runProcess({
+          command,
+          cwd: workspace.root,
+          env: environment,
+          timeoutMs: commandTimeoutMs
+        })
+      }
+
       const output: CommandResult = {
         command,
         exit_code: result.exitCode,

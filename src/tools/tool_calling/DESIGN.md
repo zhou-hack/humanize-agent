@@ -234,27 +234,44 @@ const executor = new ToolExecutor(registry)
 
 | mode | 行为 |
 | --- | --- |
-| `workspace` | 默认值。不注册 `run_command`，只通过 `createFileTools` 提供工作区内 `list_directory`、`read_file`、`search_text`、`edit_file` |
-| `approval` | 注册任意 shell 命令工具，每次执行前必须等待 `requestApproval` 返回批准 |
-| `open` | 注册任意 shell 命令工具，无需审批直接执行 |
+| `workspace` | 默认值。注册 `effect = read` 的受限只读命令工具，直接放行精确白名单，不经过 shell，也不触发人工审批 |
+| `approval` | 继承 workspace 的全部能力；只读白名单直接执行，白名单外任意 shell 命令才等待 `requestApproval` 批准，工具整体使用 `effect = write` |
+| `open` | 注册 `effect = write` 的任意 shell 命令工具，无需审批直接执行 |
 
 ```json
 {
-  "command": "npm run typecheck"
+  "command": "git status --short"
 }
 ```
 
-`approval` 模式必须提供 `requestApproval({ command, cwd }, context)` 回调。回调向用户展示完整命令和工作目录；拒绝返回 `forbidden`，默认等待 5 分钟超时，超时后迟到的批准不会再启动进程。`open` 与 `approval` 使用相同执行逻辑，唯一区别是不调用审批。
+模型只能传 `command`，不能传 env、cwd、timeout 或权限模式；所有输出都声明为不可信。`approval` 先执行与 `workspace` 相同的只读解析和路径预检：解析成功时直接通过固定 argv 或 Node 适配器执行，不请求审批；只有解析或预检未通过时，才进入任意 shell 审批流程。`approval` 必须提供 `requestApproval({ command, cwd, risk }, context)` 回调，展示完整命令、工作目录和风险；拒绝返回 `forbidden`，默认等待 5 分钟，超时后迟到的批准不会再启动进程。`open` 不尝试只读解析，始终直接执行任意 shell。
 
-- 模型只能传 `command`，不能传 env、cwd、timeout 或权限模式；所有命令使用 `effect = write` 串行执行，输出声明为不可信。
-- 命令以 canonical workspace 为初始 cwd，通过系统 shell 执行，支持管道、重定向和 shell 内置命令。
-- 子进程环境按白名单构造，不展开复制 `process.env`，不默认继承 API Key、`NODE_OPTIONS`、代理/云凭据和 Git 注入变量。
-- 每次运行创建独立临时 home/tmp/npm cache，结束后 best-effort 清理。
+`workspace` 以及 `approval` 的只读阶段使用以下解析、预检和执行路径：
+
+- lexer 将输入解析为单命令 argv，拒绝控制字符、未闭合引号、管道、重定向、串接、命令/变量代换及其他 shell 元字符。非白名单命令、危险参数和无法确认参数的写法永不直接放行：`workspace` 返回 `forbidden`，`approval` 则转入人工审批，批准前不会启动 shell。
+- 每个命令有独立参数 schema，只开放明确的只读旗标。`find` 禁止 `-exec/-execdir/-delete/-fprint` 等能力；`sed -i`、`awk`、`sort -o`、`tee`、分页器、`xargs`、`env/nice/timeout/time` 的包装执行形式以及 `wget` 不会被直接放行。
+- `curl` 仅接受单一 HTTP(S) URL 的 GET/HEAD，允许明确的静默、错误、重定向、header、User-Agent、HTTP(S) proxy 和超时旗标，旗标可位于 URL 前后。固定附加 `-q --globoff --proto =http,https --proto-redir =http,https`，同时禁止用户级 curlrc；上传、输出文件、自定义方法、本地配置及 `@file` header 均拒绝直接放行。URL 与显式 header 会发送到外部服务。
+- 路径操作数通过 workspace canonical path 预检，拒绝越界、符号链接/junction 逃逸和敏感路径；递归读取采用有界 BFS，默认最多预检 10000 个条目。敏感范围包括 `.env*`、私钥、credential/secret 命名、`.git` 与运行时记忆。
+- 原生命令解析为可信 PATH 中的绝对可执行文件，以 `shell: false` 和固定 argv 启动。Windows 的 `dir`、显示用 `cd`、`type`、`Get-Content`、`Select-String` 使用纯 Node 适配器，不调用 `cmd /c` 或 `powershell -Command`。
+- Git 仅开放指定只读子命令和参数，固定禁用分页器、fsmonitor、外部 diff、textconv、可选锁及对象替换，隔离全局/系统配置与外部属性，并要求工作区存在物理 `.git` 目录。
+
+三种模式共用以下子进程约束；Node 适配器只使用其中适用的输出和超时边界：
+
+- 命令以 canonical workspace 为初始 cwd。只有 `approval/open` 通过系统 shell 执行并支持管道、重定向和 shell 内置命令。
+- 子进程环境按白名单构造，不展开复制 `process.env`，不默认继承 API Key、`NODE_OPTIONS`、代理/云凭据和 Git 注入变量；每次运行创建独立临时 home/tmp/npm cache，结束后 best-effort 清理。
 - stdout/stderr 每流最多保留 1024 字节，超限继续 drain 并丢弃，返回 `truncated: true`。
 - 命令内部默认 60 秒超时。POSIX 用独立进程组先 TERM 后 KILL，Windows 用可信 System32 `taskkill /T /F`，等待 stdio `close` 后才释放写队列。
 - 返回 `command`、`exit_code`、`signal`、`timed_out`、`truncated`、`stdout`、`stderr`。非零退出和已终止的超时是结构化执行结果；启动失败才返回受控工具错误。
 
-**`approval` 和 `open` 都不是沙箱或 workspace 安全边界。** 任意命令可以访问工作区外、网络和系统资源。精简环境不保证秘密不会被子进程从磁盘读取或输出，进程树终止、PATH 校验和输出限制也不能承诺消除所有子孙进程、DLL/配置劫持、TOCTOU、CPU、磁盘或网络风险；强隔离仍由后续 OS 沙箱负责。
+**三种模式都不替代 OS 沙箱。** `workspace` 的白名单、路径预检和固定 argv 只约束这一工具入口，不承诺消除原生程序漏洞、配置加载、TOCTOU、资源耗尽等风险；`approval/open` 的任意命令还可访问工作区外、网络和系统资源。精简环境也不保证秘密不会被子进程从磁盘读取或输出，强隔离仍由后续 OS 沙箱负责。
+
+### `web_search`
+
+通过原生 `fetch` 调用 Tavily `POST https://api.tavily.com/search`，仅使用 `TAVILY_API_KEY` 作为 Bearer 凭据；未配置或空白时不注册，不阻断 CLI。配置后在 `workspace` 和 `approval` 中均可用，`effect = read`，结果标记为不可信。
+
+- 模型参数为 `query`、`max_results`（默认 5，1–20）、`search_depth`（`basic/advanced/fast/ultra-fast`）和 `include_answer`，不能注入 API Key、endpoint 或 timeout。
+- 默认 30 秒请求超时。401/403、429、400/422、超时、网络错误及无效响应映射为受控工具错误，不向模型返回 API 错误正文。
+- 仅返回 query、可选 answer，以及每项结果的 title、url、content、score 和可选 published_date；固定不请求或回传原始网页内容。
 
 ## 6. 后续工具：记忆
 
@@ -439,8 +456,9 @@ Native Handler  → ToolDefinition
 
 1. 工具注册表、Ajv 参数校验、`effect` 调度、统一结果与错误码、每工具超时和结果截断。
 2. `list_directory`、`read_file`、`search_text`、`edit_file`，含可信 workspace、路径与链接校验、UTF-8 字节/行范围读取、跨平台文本搜索、精确替换和原子写入。
-3. 三档权限 `run_command`，含用户审批、任意 shell 命令、精简环境、有界输出和进程树终止。
-4. 核心、文件与命令工具的自动化测试。
+3. 三档权限 `run_command`，含 workspace 只读单命令 argv 白名单、路径与敏感文件预检、Git/Windows 适配、approval 白名单继承与白名单外审批，以及 approval/open 的任意 shell、精简环境、有界输出和进程树终止。
+4. Tavily `web_search`，含可选环境配置、搜索参数、超时、受控错误、精简结果与不可信内容标记。
+5. 核心、文件、命令与网页搜索工具的自动化测试。
 
 后续实现：
 

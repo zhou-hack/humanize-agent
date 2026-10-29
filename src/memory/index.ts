@@ -64,6 +64,21 @@ export class MemoryService {
     return this.serializeSession(() => this.startConversationInternal())
   }
 
+  async startNewConversation(): Promise<Conversation> {
+    await this.initialize()
+    return this.serializeSession(async () => {
+      const active = this.currentId
+        ? this.store.findConversation(this.currentId)
+        : this.store.getLatestActiveConversation()
+      if (active?.status === 'active') {
+        await this.summaries.closeConversation(active.id, true)
+      }
+      const conversation = this.store.createConversation(this.now())
+      this.currentId = conversation.id
+      return conversation
+    })
+  }
+
   async recordMessage(
     input: Omit<AppendMessageInput, 'conversationId' | 'createdAt'> & { createdAt?: number }
   ): Promise<{ conversation: Conversation; message: StoredMessage }> {
