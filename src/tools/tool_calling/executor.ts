@@ -14,6 +14,7 @@ export class ToolExecutor {
   private readonly timeoutMs: number
   private readonly maxResultChars: number
   private serialTail: Promise<void> = Promise.resolve()
+  private writeQueueFailed = false
 
   constructor(
     private readonly registry: ToolRegistry,
@@ -40,6 +41,9 @@ export class ToolExecutor {
 
     if (tool.definition.effect === 'read') {
       return this.run(tool, call, context)
+    }
+    if (this.writeQueueFailed) {
+      return writeQueueFailure()
     }
 
     return this.runSerial(tool, call, context)
@@ -99,11 +103,19 @@ export class ToolExecutor {
     })
 
     return previous.then(() => {
+      if (this.writeQueueFailed) {
+        release()
+        return writeQueueFailure()
+      }
+
       const pending = Promise.resolve().then(() =>
         tool.definition.handler(call.arguments, context)
       )
       pending.then(release, release)
-      return this.waitForResult(pending, tool, context)
+      return this.waitForResult(pending, tool, context, () => {
+        this.writeQueueFailed = true
+        release()
+      })
     })
   }
 
@@ -121,12 +133,14 @@ export class ToolExecutor {
   private async waitForResult(
     pending: Promise<unknown>,
     tool: RegisteredTool,
-    context: ToolContext
+    context: ToolContext,
+    onTimeout?: () => void
   ): Promise<ToolResult> {
     let timer: NodeJS.Timeout | undefined
     const isWrite = tool.definition.effect !== 'read'
     const timeout = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
+        onTimeout?.()
         reject(
           new ToolError(
             'timeout',
@@ -177,4 +191,11 @@ export class ToolExecutor {
       truncated: true
     }
   }
+}
+
+function writeQueueFailure(): ToolResult {
+  return failure(new ToolError(
+    'timeout',
+    '此前写工具超时，写队列已停用，请创建新的执行器后再试'
+  ))
 }

@@ -1,12 +1,12 @@
 # 项目概览
 
-> 最后更新：2026-10-28
+> 最后更新：2026-10-29
 
 ## 定位
 
 humanize-agent 是一个专注长期记忆的 Agent。核心目标不是堆砌工具数量，而是让 Agent 在持续交互中记住有价值的信息，并在之后的对话里自然地用上。
 
-当前处于基础模块搭建阶段：记忆、工具调用、LLM 适配三大底层模块已完成并通过真实 API 验证，但还没有把它们串起来的 Agent 主循环，因此暂时无法作为一个完整产品直接对话使用。
+记忆、工具调用、LLM 适配和 Agent 主循环已完成，并已提供最小交互 CLI。可以通过 `npm run cli` 进行连续对话，验证工作区工具与长期记忆。
 
 ## 技术栈
 
@@ -21,7 +21,12 @@ humanize-agent 是一个专注长期记忆的 Agent。核心目标不是堆砌�
 
 ```text
 src/
-├── agent/                  # Agent 主循环，下一步实现
+├── agent/                  # Agent 主循环，已完成
+│   └── index.ts            #   记忆、LLM、工具编排与上下文控制
+├── cli/                    # 最小交互 CLI，已完成
+│   ├── index.ts            #   生产依赖组装与启动入口
+│   ├── repl.ts             #   readline 连续对话与取消
+│   └── summarize.ts        #   LLM 增量总结器
 ├── llm/                    # LLM 适配层，已完成
 │   ├── types.ts            #   统一 LlmClient / LlmRequest / LlmResponse 协议
 │   ├── anthropic/          #   Anthropic Messages API 适配器
@@ -56,8 +61,8 @@ src/
 | 记忆 `memory` | 已完成 | 三级记忆、SQLite 持久化、增量总结、表情包、8 个原生工具 |
 | 工具调用 `tool_calling` | 已完成 | 注册校验调度、4 个文件工具、三档权限命令工具、工作区管理 |
 | LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议 |
-| Agent 主循环 `agent` | 未开始 | 下一步实现，串联以上三个模块 |
-| CLI 对话入口 | 未开始 | Agent Loop 之后实现 |
+| Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
+| CLI 对话入口 `cli` | 已完成 | readline 连续对话、流式输出、工具状态、Ctrl+C 取消 |
 | 沙箱 `sandbox` | 暂缓 | 强隔离延后，当前命令权限不构成安全边界 |
 | MCP / Skill | 预留 | 目录与外置结构已定，适配器未实现 |
 
@@ -94,6 +99,13 @@ src/
 
 均支持普通调用、流式文本、函数工具、历史消息和受控错误，错误信息不包含密钥与原始响应正文。
 
+### Agent 与 CLI
+
+- Agent 单次请求串联记忆加载、LLM、工具执行、结果回传与消息落库，支持最大 8 批工具、取消超时、串行请求和中断恢复。
+- 默认上下文预算为 10 万字符，优先压缩旧工具结果并保持调用配对；原始 SQLite 消息不修改。
+- `npm run cli` 构建并启动交互 CLI，默认注册工作区文件工具和记忆工具，不注册 shell。
+- CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用一个 Agent。
+
 ## 已验证能力
 
 真实 API（非 mock）已验证：
@@ -104,15 +116,16 @@ src/
 
 ## 下一步
 
-1. **Agent Loop**：单次请求的"输入 → 加载记忆 → LLM → 工具 → 回传 → 最终回答"循环，含最大 8 轮工具限制、超时取消、事件回调和消息落库。
-2. **CLI 对话入口**：最小可交互命令行，验证连续对话与记忆效果。
-3. 之后再考虑 MCP / Skill 适配和 OS 沙箱。
+1. 通过 CLI 持续验证真实对话、工作区操作和长期记忆效果。
+2. 之后再考虑 MCP / Skill 适配和 OS 沙箱。
 
 ## 环境变量
 
 当前统一使用以下变量，无兼容别名：
 
 ```text
+LLM_PROVIDER=anthropic            # 或 openai
+
 ANTHROPIC_BASE_URL=
 ANTHROPIC_API_KEY=
 ANTHROPIC_MODEL=

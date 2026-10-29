@@ -29,6 +29,7 @@ export interface CommandResult {
   truncated: boolean
   stdout: string
   stderr: string
+  termination_error?: string
 }
 
 interface ProcessSpecBase {
@@ -50,4 +51,5 @@ export interface ProcessResult {
   truncated: boolean
   stdout: string
   stderr: string
+  terminationError?: string
 }

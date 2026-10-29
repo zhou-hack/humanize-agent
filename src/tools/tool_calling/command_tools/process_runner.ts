@@ -54,8 +54,11 @@ async function execute(spec: ProcessSpec, temporaryHome: string): Promise<Proces
       }
     )
 
+    let terminationError: string | undefined
     if (termination) {
-      await termination
+      await termination.catch(() => {
+        terminationError = '终止进程树失败'
+      })
     }
 
     return {
@@ -64,7 +67,8 @@ async function execute(spec: ProcessSpec, temporaryHome: string): Promise<Proces
       timedOut,
       truncated: stdout.truncated || stderr.truncated,
       stdout: stdout.value(),
-      stderr: stderr.value()
+      stderr: stderr.value(),
+      ...(terminationError ? { terminationError } : {})
     }
   } finally {
     clearTimeout(timer)

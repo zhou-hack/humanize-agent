@@ -18,7 +18,7 @@ async function resolveTrustedDirectories(
 
   for (const entry of trustedPath.split(path.delimiter)) {
     if (!entry || !path.isAbsolute(entry)) {
-      throw new ToolError('forbidden', 'trustedPath 包含空或相对目录')
+      continue
     }
 
     let directory: string

@@ -62,7 +62,7 @@ export function createEditFileTool(workspace: Workspace): ToolDefinition {
 
       const updated = replaceAll
         ? content.split(oldString).join(newString)
-        : content.replace(oldString, newString)
+        : content.replace(oldString, () => newString)
       const output = Buffer.from(updated, 'utf8')
 
       if (output.length > MAX_EDIT_BYTES) {

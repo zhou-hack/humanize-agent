@@ -80,7 +80,8 @@ export async function createCommandTools(
         timed_out: result.timedOut,
         truncated: result.truncated,
         stdout: result.stdout,
-        stderr: result.stderr
+        stderr: result.stderr,
+        ...(result.terminationError ? { termination_error: result.terminationError } : {})
       }
       return output
     }

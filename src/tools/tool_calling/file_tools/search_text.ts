@@ -15,6 +15,7 @@ const MAX_LIMIT = 200
 const MAX_SCAN_FILES = 1000
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const MAX_LINE_CHARS = 500
+const IGNORED_DIRECTORY_NAMES = new Set(['.git', 'node_modules'])
 
 interface SearchTextArgs {
   path?: string
@@ -112,6 +113,7 @@ async function searchEntry(
       children.sort((left, right) => left.name.localeCompare(right.name))
       for (const child of children) {
         if (child.isSymbolicLink()) continue
+        if (child.isDirectory() && IGNORED_DIRECTORY_NAMES.has(child.name)) continue
         const type = child.isFile() ? 'file' : child.isDirectory() ? 'directory' : 'other'
         if (type === 'other') continue
         pending.push({
