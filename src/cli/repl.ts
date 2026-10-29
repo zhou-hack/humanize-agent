@@ -11,7 +11,7 @@ const HELP = `命令：
 运行中按 Ctrl+C 取消当前请求。
 `
 
-export type ReplSession = Pick<CliSession, 'run' | 'snapshot' | 'cd' | 'setPermission'>
+export type ReplSession = Pick<CliSession, 'run' | 'snapshot' | 'cd' | 'setPermission' | 'close'>
 
 export interface ReplOptions {
   createSession: (requestApproval: CommandApprovalHandler) => ReplSession | Promise<ReplSession>
@@ -116,8 +116,9 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     return normalized === 'y' || normalized === 'yes'
   }
 
+  let session: ReplSession | undefined
   try {
-    const session = await options.createSession(requestApproval)
+    session = await options.createSession(requestApproval)
     output.write(`humanize-agent CLI\n${HELP}`)
     writeSnapshot(output, session.snapshot())
     if (!closed) readline.prompt()
@@ -218,6 +219,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     readline.removeListener('close', onClose)
     if (!closed) readline.close()
     queue.close()
+    await session?.close()
   }
 }
 

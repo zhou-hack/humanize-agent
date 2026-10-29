@@ -33,6 +33,10 @@ src/
 │   ├── anthropic/          #   Anthropic Messages API 适配器
 │   └── openai/             #   OpenAI Responses + Chat Completions 适配器
 ├── tools/
+│   ├── index.ts            # 内置 Skill/MCP bundle 聚合加载与统一关闭
+│   ├── types.ts            # 内置资源加载协议
+│   ├── skill/              # SKILL.md 与 read_skill 加载器
+│   ├── mcp/                # servers.json 与 stdio MCP 适配器
 │   └── tool_calling/       # 工具调用层，已完成
 │       ├── registry.ts     #   工具注册与 Ajv 参数校验
 │       ├── executor.ts     #   调度、超时、读写串行屏障、结果截断
@@ -49,10 +53,12 @@ src/
 │   ├── tools.ts            #   8 个原生记忆工具
 │   └── index.ts            #   MemoryService 统一入口
 ├── sandbox/                # OS 沙箱，暂缓
-└── data/                   # 运行时数据，不提交 Git
+└── data/                   # 运行时数据与工具资源
     ├── memory/             #   MEMORY.md 与 memory.db
     ├── multimedia/         #   表情包等多媒体文件
-    └── tools/              #   外置用户自定义 MCP / Skill
+    └── tools/
+        ├── skill/builtin/  #   内置 Skill；其他子目录可用于外置 Skill
+        └── mcp/builtin/    #   内置 MCP 清单与服务；其他子目录可用于外置 MCP
 ```
 
 ## 模块进度
@@ -65,7 +71,7 @@ src/
 | Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
 | CLI 对话入口 `cli` | 已完成 | 连续对话、流式输出、`/cd` 工作区切换、两档权限与命令审批 |
 | 沙箱 `sandbox` | 暂缓 | 强隔离延后，当前命令权限不构成安全边界 |
-| MCP / Skill | 预留 | 目录与外置结构已定，适配器未实现 |
+| 内置 MCP / Skill | 已完成 | `SKILL.md` 索引与 `read_skill`、本地 stdio MCP 发现调用、权限过滤和连接生命周期；远程 MCP 预留 |
 
 ## 已实现能力细节
 
@@ -89,6 +95,8 @@ src/
 - Windows 超时终止进程树时，对 `taskkill` 未能终止的失败 PID 逐个兜底；仍失败则保留命令输出并返回 `termination_error`。
 - 工作区边界：canonical path、防路径穿越、防符号链接逃逸；`WorkspaceManager` 支持默认目录与用户选择目录。
 - 跨平台：文件与搜索均为纯 Node.js 实现，不依赖 `grep`/`rg`，Windows 与 Linux 行为一致。
+- 内置 Skill：`src/data/tools/skill/builtin/<name>/SKILL.md` 提供 frontmatter 与正文，系统只注入索引，`read_skill` 按需读取正文并标记不可信；加载校验 64 KiB、UTF-8、目录名称和链接边界。
+- 内置 MCP：`src/data/tools/mcp/builtin/servers.json` 声明本地 stdio 服务器，支持分页发现、原名调用、30 秒默认超时和 `mcp__<server>__<tool>` 命名；单服务器失败警告降级，远程 HTTP/SSE/OAuth 暂未实现。
 
 ### LLM 适配
 
@@ -112,6 +120,7 @@ src/
 - `/permission [workspace|approval]` 无参在两档间切换、带参精确设置；`workspace` 不注册 shell 或 git，但无需审批即可使用受工作区边界约束的读取、编辑、建目录、移动和删除工具；`approval` 在终端逐条审批命令，`open` 暂未开放。
 - CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用记忆与会话。
 - CLI 系统提示将当前工作区绝对路径、权限模式和 `run_command` 可用性作为优先于历史消息的运行状态注入：`workspace` 明确 shell 未注册，`approval` 明确命令需审批；`/cd` 或权限切换重建会话时使用最新状态，并明确相对路径基准、当前目录读取方式、专用工具优先、只读禁写删和工作区边界。
+- 内置 bundle 只在 CLI 初始化时加载一次：`workspace` 仅注册 `effect=read` 的内置工具，`approval` 注册全部；`/cd` 和权限切换复用 MCP 连接，初始化失败及 REPL 退出统一幂等关闭。构建会复制 `SKILL.md` 和 JSON 到 `dist/data/tools/`。
 
 ## 已验证能力
 
@@ -126,11 +135,13 @@ src/
 - 真实 CLI 通过 `/cd` 切换到项目目录后，能准确回答当前绝对路径，并在省略 `path` 时通过 `list_directory` 返回正确的 `workspace_root` 与目录条目。
 - 真实 CLI 在默认 `workspace`、切换 `approval`、恢复 `workspace` 后均能回答当前权限与 `run_command` 注册状态，状态询问未触发工具调用。
 - 真实 CLI 在默认 `workspace` 下未使用 shell 或 git，依次完成 `pwd → mkdir → move → delete`，并通过两个 `stat_path` 确认测试目录均无残留。
+- 真实 CLI 从 `dist` 加载临时内置 Skill 和 stdio MCP：`read_skill` 返回完整正文，只读 MCP 在 `workspace` 调用成功，副作用 MCP 在切换 `approval` 后调用成功；测试资源已清理。
+- 目录上移后，真实 CLI 已从 `src/data/tools/skill/builtin/` 并通过 `dist/data/tools/` 成功读取验证 Skill，临时文件已清理。
 
 ## 下一步
 
 1. 通过 CLI 持续验证真实对话、工作区操作和长期记忆效果。
-2. 之后再考虑 MCP / Skill 适配和 OS 沙箱。
+2. 之后再考虑远程 MCP、OAuth、动态刷新和 OS 沙箱。
 
 ## 环境变量
 

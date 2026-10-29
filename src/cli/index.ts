@@ -43,7 +43,10 @@ async function main(): Promise<void> {
         memory: memoryService,
         llm,
         requestApproval,
-        system: DEFAULT_SYSTEM
+        system: DEFAULT_SYSTEM,
+        onBuiltinWarning: (message) => {
+          process.stderr.write(`警告：${message}\n`)
+        }
       }),
       input: process.stdin,
       output: process.stdout,

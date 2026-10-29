@@ -9,7 +9,7 @@
 - 将结果以统一格式追加回当前会话。
 - 记忆工具、表情包工具、MCP 和 Skill 共用同一套调用协议。
 
-首版已实现工具注册、校验、调度和统一结果，并提供 workspace 内的 `list_directory`、`read_file`、`search_text`、`edit_file` 及三档权限的 `run_command`。Agent Loop、记忆、表情包、MCP、Skill 及 OS 沙箱能力仍按后续模块逐步接入。
+已实现工具注册、校验、调度和统一结果，并提供工作区文件工具、三档权限 `run_command`、记忆工具、内置 Skill 与本地 stdio MCP 适配。远程 MCP、OAuth 和 OS 沙箱仍按后续模块逐步接入。
 
 ## 2. 模块边界
 
@@ -18,8 +18,8 @@ flowchart LR
     A[Agent Loop] --> B[Tool Calling]
     B --> C[参数与权限校验]
     C --> D[Native Tools]
-    C -.后续接入.-> E[MCP Adapter]
-    C -.后续接入.-> F[Skill Adapter]
+    C --> E[MCP Adapter]
+    C --> F[Skill Adapter]
     D --> G[Memory]
     D --> H[Stickers]
     B --> I[统一 Tool Result]
@@ -33,6 +33,7 @@ flowchart LR
 - `tool_calling/file_tools/`：实现可信 workspace 边界及文件读取、精确编辑，不允许模型传入工作区根目录。
 - `tool_calling/workspace_manager.ts`：管理默认目录和用户选择的当前目录，按当前目录创建文件与命令工具。
 - `tool_calling/command_tools/`：实现三档命令权限、用户审批、可信环境解析和子进程管理，不承担 OS 沙箱职责。
+- `tools/index.ts`、`tools/skill/`、`tools/mcp/`：从 `data/tools/skill/builtin/` 和 `data/tools/mcp/builtin/` 发现内置资源，完成解析、工具适配、`effect` 标记及客户端关闭，不改变执行核心。
 - `memory/`：实现记忆读写与检索。
 - `media.ts`：实现表情包保存和检索。
 - `llm/`：把内部工具定义和调用结果转换为 OpenAI、Anthropic 等厂商格式。

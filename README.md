@@ -91,6 +91,47 @@ npm run cli
 
 非空目录只有显式设置 `recursive=true` 才能递归删除；禁止删除工作区根目录、越界操作和覆盖已有移动目标。
 
+## 内置 Skill 与 MCP
+
+内置资源放在 `src/data/tools/<skill|mcp>/builtin/`，加载器位于 `src/tools/skill/` 和 `src/tools/mcp/`。构建时会将 `SKILL.md` 和 JSON 清单复制到 `dist/data/tools/`。`builtin` 之外的其他同级目录预留给外置资源，外置自动加载尚未接入。
+
+### Skill
+
+每个技能使用独立目录：
+
+```text
+src/data/tools/skill/builtin/<name>/SKILL.md
+```
+
+文件包含 `name`、`description` frontmatter 和 Markdown 正文。CLI 只向模型注入技能索引，模型通过 `read_skill` 按需读取完整正文；正文按不可信内容处理。
+
+### 本地 stdio MCP
+
+在 `src/data/tools/mcp/builtin/servers.json` 中声明服务器：
+
+```json
+{
+  "servers": {
+    "demo": {
+      "command": "node",
+      "args": ["./demo/server.js"],
+      "cwd": "./demo",
+      "env": { "TOKEN": "${DEMO_TOKEN}" },
+      "timeoutMs": 30000
+    }
+  }
+}
+```
+
+相对 `cwd` 基于清单目录解析，密钥通过环境变量引用注入。工具以 `mcp__<server>__<tool>` 注册：
+
+- `workspace` 仅注册 `readOnlyHint=true` 的只读 MCP 工具。
+- `approval` 注册全部 MCP 工具，副作用调用按写工具串行执行，不额外弹出通用审批。
+- 单服务器加载失败会警告并跳过，不阻断其他工具和对话。
+- `/cd` 和权限切换复用现有连接，退出 CLI 时统一关闭。
+
+首版不支持远程 HTTP、SSE、OAuth、自动重连和动态工具刷新。
+
 ## 开发命令
 
 ```bash
