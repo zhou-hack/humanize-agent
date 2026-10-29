@@ -153,6 +153,7 @@ OPENAI_API_MODE=responses        # 或 chat_completions
 
 ## 相关文档
 
+- 项目说明与使用指南：[README.md](../README.md)
 - 项目协作与 Git 身份规则：[AGENTS.md](../AGENTS.md)
 - 记忆设计：[src/memory/DESIGN.md](../src/memory/DESIGN.md)
 - 工具调用设计：[src/tools/tool_calling/DESIGN.md](../src/tools/tool_calling/DESIGN.md)
