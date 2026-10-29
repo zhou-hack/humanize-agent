@@ -133,22 +133,48 @@ async function terminateProcessTree(
   }
 }
 
-function runTaskkill(executable: string, pid: number): Promise<void> {
+async function runTaskkill(executable: string, pid: number): Promise<void> {
+  const first = await runTaskkillOnce(executable, ['/PID', String(pid), '/T', '/F'])
+  if (first.code === 0) return
+
+  const failedPids = failedTaskkillPids(first.stderr)
+  for (const failedPid of failedPids) {
+    try {
+      process.kill(Number(failedPid), 'SIGKILL')
+    } catch (error) {
+      if (!isNodeError(error, 'ESRCH')) throw error
+    }
+  }
+  if (failedPids.length === 0) throw new Error('终止进程树失败')
+}
+
+function runTaskkillOnce(
+  executable: string,
+  args: string[]
+): Promise<{ code: number | null; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const killer = spawn(executable, ['/PID', String(pid), '/T', '/F'], {
+    const killer = spawn(executable, args, {
       shell: false,
       windowsHide: true,
-      stdio: 'ignore'
+      stdio: ['ignore', 'pipe', 'pipe']
     })
+    const stderr: Buffer[] = []
+    killer.stdout?.resume()
+    killer.stderr?.on('data', (chunk: Buffer) => stderr.push(chunk))
     killer.once('error', reject)
     killer.once('close', (code) => {
-      if (code === 0) {
-        resolve()
-      } else {
-        reject(new Error('终止进程树失败'))
-      }
+      resolve({ code, stderr: Buffer.concat(stderr).toString('utf8') })
     })
   })
+}
+
+function failedTaskkillPids(stderr: string): string[] {
+  const pids = new Set<string>()
+  for (const line of stderr.split(/\r?\n/)) {
+    const match = /\bPID\s+(\d+)/i.exec(line)
+    if (match?.[1]) pids.add(match[1])
+  }
+  return [...pids]
 }
 
 class BoundedOutput {

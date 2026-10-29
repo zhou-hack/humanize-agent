@@ -16,6 +16,8 @@ export interface ToolContext {
   conversationId: string
   imageIds: string[]
   untrustedSeen: boolean
+  onApprovalStart?: () => void
+  onApprovalEnd?: () => void
 }
 
 export interface ToolDefinition {

@@ -1,3 +1,4 @@
+import { performance } from 'node:perf_hooks'
 import type {
   LlmClient,
   LlmMessage,
@@ -99,9 +100,31 @@ export class Agent {
       controller.abort(new AgentError('aborted', 'Agent 请求已取消'))
     }
     const timeoutMs = runOptions.timeoutMs ?? this.timeoutMs
-    const timer = setTimeout(() => {
-      controller.abort(new AgentError('timeout', 'Agent 请求已超时'))
-    }, timeoutMs)
+    let remainingMs = timeoutMs
+    let resumedAt = performance.now()
+    let approvalDepth = 0
+    let timer: NodeJS.Timeout | undefined
+    const armTimeout = (): void => {
+      if (signal.aborted) return
+      timer = setTimeout(() => {
+        controller.abort(new AgentError('timeout', 'Agent 请求已超时'))
+      }, remainingMs)
+    }
+    const onApprovalStart = (): void => {
+      approvalDepth += 1
+      if (approvalDepth !== 1) return
+      if (timer) clearTimeout(timer)
+      timer = undefined
+      remainingMs = Math.max(0, remainingMs - (performance.now() - resumedAt))
+    }
+    const onApprovalEnd = (): void => {
+      if (approvalDepth === 0) return
+      approvalDepth -= 1
+      if (approvalDepth !== 0 || signal.aborted) return
+      resumedAt = performance.now()
+      armTimeout()
+    }
+    armTimeout()
 
     if (runOptions.signal?.aborted) {
       onExternalAbort()
@@ -122,7 +145,9 @@ export class Agent {
       const context: ToolContext = {
         conversationId: conversation.id,
         imageIds: [...(runOptions.imageIds ?? [])],
-        untrustedSeen: false
+        untrustedSeen: false,
+        onApprovalStart,
+        onApprovalEnd
       }
 
       await this.options.memory.recordMessage({ role: 'user', content: runOptions.text })

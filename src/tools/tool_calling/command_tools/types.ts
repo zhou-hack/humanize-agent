@@ -5,6 +5,7 @@ export type CommandExecutionMode = 'workspace' | 'approval' | 'open'
 export interface CommandApprovalRequest {
   command: string
   cwd: string
+  risk: 'normal' | 'destructive'
 }
 
 export type CommandApprovalHandler = (

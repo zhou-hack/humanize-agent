@@ -25,7 +25,8 @@ src/
 │   └── index.ts            #   记忆、LLM、工具编排与上下文控制
 ├── cli/                    # 最小交互 CLI，已完成
 │   ├── index.ts            #   生产依赖组装与启动入口
-│   ├── repl.ts             #   readline 连续对话与取消
+│   ├── repl.ts             #   readline 连续对话、斜杠命令与审批
+│   ├── session.ts          #   默认目录、工作区与权限切换
 │   └── summarize.ts        #   LLM 增量总结器
 ├── llm/                    # LLM 适配层，已完成
 │   ├── types.ts            #   统一 LlmClient / LlmRequest / LlmResponse 协议
@@ -59,10 +60,10 @@ src/
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
 | 记忆 `memory` | 已完成 | 三级记忆、SQLite 持久化、增量总结、表情包、8 个原生工具 |
-| 工具调用 `tool_calling` | 已完成 | 注册校验调度、4 个文件工具、三档权限命令工具、工作区管理 |
+| 工具调用 `tool_calling` | 已完成 | 注册校验调度、6 个文件工具、三档权限命令工具、工作区管理 |
 | LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议 |
 | Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
-| CLI 对话入口 `cli` | 已完成 | readline 连续对话、流式输出、工具状态、Ctrl+C 取消 |
+| CLI 对话入口 `cli` | 已完成 | 连续对话、流式输出、`/cd` 工作区切换、两档权限与命令审批 |
 | 沙箱 `sandbox` | 暂缓 | 强隔离延后，当前命令权限不构成安全边界 |
 | MCP / Skill | 预留 | 目录与外置结构已定，适配器未实现 |
 
@@ -82,8 +83,9 @@ src/
 ### 工具调用
 
 - 统一 `ToolDefinition` 协议，`effect: read / write / send` 决定并行与串行屏障。
-- 文件工具：`list_directory`、`read_file`（字节分页或 inclusive 行范围）、`search_text`、`edit_file`（精确替换、原子写入、乐观冲突检测）。
-- 命令工具三档权限：`workspace`（默认，不注册 shell）、`approval`（任意命令需审批）、`open`（直接执行）。
+- 文件工具：`list_directory`、`read_file`（字节分页或 inclusive 行范围）、`search_text`、`edit_file`（精确替换、原子写入、乐观冲突检测）、`stat_path`（精确查询路径存在性与元数据）、`find_path`（按名称、深度和分页查找文件或目录）。
+- 命令工具三档权限：`workspace`（默认，不注册 shell）、`approval`（任意命令需审批）、`open`（直接执行）。审批会标记常见删除、移动和重命名命令为高风险并明确警告，但不自动允许或阻止命令。
+- Windows 超时终止进程树时，对 `taskkill` 未能终止的失败 PID 逐个兜底；仍失败则保留命令输出并返回 `termination_error`。
 - 工作区边界：canonical path、防路径穿越、防符号链接逃逸；`WorkspaceManager` 支持默认目录与用户选择目录。
 - 跨平台：文件与搜索均为纯 Node.js 实现，不依赖 `grep`/`rg`，Windows 与 Linux 行为一致。
 
@@ -102,9 +104,13 @@ src/
 ### Agent 与 CLI
 
 - Agent 单次请求串联记忆加载、LLM、工具执行、结果回传与消息落库，支持最大 8 批工具、取消超时、串行请求和中断恢复。
+- 人工审批期间暂停 Agent 总超时，嵌套审批按深度配对；恢复后沿用剩余预算，不重置完整超时，外部取消仍然有效。审批自身与工具执行超时继续生效。
 - 默认上下文预算为 10 万字符，优先压缩旧工具结果并保持调用配对；原始 SQLite 消息不修改。
-- `npm run cli` 构建并启动交互 CLI，默认注册工作区文件工具和记忆工具，不注册 shell。
-- CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用一个 Agent。
+- `npm run cli` 构建并启动交互 CLI。默认工作区：Windows 为 `~/Documents/humanize-agent-work`，Linux/macOS 为 `~/humanize-agent-work`，启动时自动创建。
+- `/cd <路径>` 切换已存在目录，相对路径基于当前工作区；切换会重建工具，失败时保留原工作区。
+- `/permission [workspace|approval]` 无参在两档间切换、带参精确设置；`workspace` 不注册 shell，`approval` 在终端逐条审批命令，`open` 暂未开放。
+- CLI 支持流式输出、`/help`、`/exit`、运行中 Ctrl+C 取消及 EOF 退出，同一进程复用记忆与会话。
+- CLI 系统提示注入当前平台，要求优先使用专用工具、只读查询禁止写删，并在未经用户明确要求时限制在当前工作区内操作。
 
 ## 已验证能力
 
@@ -113,6 +119,9 @@ src/
 - Anthropic 调用 `read_file` 读取 `README.md` 生成项目总结，读取 `.gitignore` 给出配置建议。
 - OpenAI Responses 通过 `function_call` / `function_call_output` 完成同样的文件读取与总结。
 - 三种客户端分别调用 `list_directory` 查看工作区根目录，均正确返回 13 个条目并生成中文总结，完整走通"模型发起调用 → 工具执行 → 结果回传 → 模型总结"链路。
+- 真实 CLI 查询 `CloudLedger` 时仅调用一次 `stat_path`，未执行多余 shell。
+- 真实 CLI 对 `rm -rf` 审批显示高风险警告，输入拒绝后返回 `forbidden`，命令未执行。
+- 真实 CLI 在人工审批延迟后批准 `node --version`，命令继续执行并成功返回版本与零退出码。
 
 ## 下一步
 
@@ -140,6 +149,7 @@ OPENAI_API_MODE=responses        # 或 chat_completions
 
 ## 相关文档
 
+- 项目协作与 Git 身份规则：[AGENTS.md](../AGENTS.md)
 - 记忆设计：[src/memory/DESIGN.md](../src/memory/DESIGN.md)
 - 工具调用设计：[src/tools/tool_calling/DESIGN.md](../src/tools/tool_calling/DESIGN.md)
 - 工作区管理：[src/tools/tool_calling/workspace_manager.md](../src/tools/tool_calling/workspace_manager.md)

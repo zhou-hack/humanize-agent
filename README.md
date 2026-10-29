@@ -10,4 +10,4 @@ humanize-agent 致力于探索 Agent 的长期记忆能力：让 Agent 能够在
 
 ## 项目状态
 
-在写了在写了
+正在鞭策Trae中

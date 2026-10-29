@@ -1,8 +1,10 @@
 import type { ToolDefinition } from '../types.js'
 import { createEditFileTool } from './edit_file.js'
+import { createFindPathTool } from './find_path.js'
 import { createListDirectoryTool } from './list_directory.js'
 import { createReadFileTool } from './read_file.js'
 import { createSearchTextTool } from './search_text.js'
+import { createStatPathTool } from './stat_path.js'
 import { createWorkspace } from './workspace.js'
 
 export interface FileToolsOptions {
@@ -15,6 +17,8 @@ export async function createFileTools(options: FileToolsOptions): Promise<ToolDe
     createListDirectoryTool(workspace),
     createReadFileTool(workspace),
     createSearchTextTool(workspace),
-    createEditFileTool(workspace)
+    createEditFileTool(workspace),
+    createStatPathTool(workspace),
+    createFindPathTool(workspace)
   ]
 }

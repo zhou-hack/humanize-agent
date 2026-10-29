@@ -1,19 +1,18 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { loadEnvFile } from 'node:process'
-import { Agent } from '../agent/index.js'
 import { createAnthropicClient, createOpenAIClient } from '../llm/index.js'
 import type { LlmClient } from '../llm/types.js'
-import { createMemoryTools, MemoryService } from '../memory/index.js'
-import {
-  createWorkspaceManager,
-  ToolExecutor,
-  ToolRegistry
-} from '../tools/tool_calling/index.js'
+import { MemoryService } from '../memory/index.js'
 import { runRepl } from './repl.js'
+import { createCliSession } from './session.js'
 import { createLlmSummarizer } from './summarize.js'
 
-const DEFAULT_SYSTEM = '你是 humanize-agent。使用用户的语言回答；需要查看或修改工作区时优先使用提供的工具，不要猜测文件内容。'
+const DEFAULT_SYSTEM = `你是 humanize-agent。当前平台：${process.platform}。使用用户的语言回答。
+需要查看或修改工作区时优先使用专用工具，只有专用工具不足时才使用 shell，不要猜测文件内容。
+查询路径是否存在使用 stat_path，按名称查找文件或目录使用 find_path。
+只读查询禁止删除、移动、重命名或写入任何内容。
+未经用户明确要求，不得访问或操作当前工作区之外的目录。`
 
 async function main(): Promise<void> {
   let memory: MemoryService | undefined
@@ -38,22 +37,14 @@ async function main(): Promise<void> {
         printError('警告：会话总结失败', error)
       }
     })
-    const workspace = await createWorkspaceManager({ defaultDirectory: process.cwd() })
-    const registry = new ToolRegistry([
-      ...await workspace.createTools(),
-      ...createMemoryTools({ store: memory.store, core: memory.core })
-    ])
-    const executor = new ToolExecutor(registry)
-    const agent = new Agent({
-      memory,
-      llm,
-      registry,
-      executor,
-      system: DEFAULT_SYSTEM
-    })
-
+    const memoryService = memory
     await runRepl({
-      agent,
+      createSession: (requestApproval) => createCliSession({
+        memory: memoryService,
+        llm,
+        requestApproval,
+        system: DEFAULT_SYSTEM
+      }),
       input: process.stdin,
       output: process.stdout,
       error: process.stderr,

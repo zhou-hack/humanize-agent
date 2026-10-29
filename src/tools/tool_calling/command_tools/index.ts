@@ -57,7 +57,11 @@ export async function createCommandTools(
       if (!command.trim()) {
         throw new ToolError('invalid_args', '命令不能为空')
       }
-      const request: CommandApprovalRequest = { command, cwd: workspace.root }
+      const request: CommandApprovalRequest = {
+        command,
+        cwd: workspace.root,
+        risk: classifyCommandRisk(command)
+      }
       if (mode === 'approval') {
         await requestApproval(
           options.requestApproval as CommandApprovalHandler,
@@ -95,6 +99,7 @@ async function requestApproval(
   timeoutMs: number
 ): Promise<void> {
   let timer: NodeJS.Timeout | undefined
+  context.onApprovalStart?.()
   try {
     const approved = await Promise.race([
       Promise.resolve(handler(request, context)),
@@ -110,7 +115,33 @@ async function requestApproval(
     }
   } finally {
     if (timer) clearTimeout(timer)
+    context.onApprovalEnd?.()
   }
+}
+
+const DESTRUCTIVE_COMMANDS = new Set([
+  'rm', 'del', 'erase', 'rmdir', 'rd', 'unlink',
+  'mv', 'move', 'ren', 'rename', 'ri', 'mi', 'rni',
+  'remove-item', 'move-item', 'rename-item'
+])
+const QUERY_FLAGS = ['--help', '--version', '/?', '-whatif']
+
+function classifyCommandRisk(command: string): CommandApprovalRequest['risk'] {
+  const normalized = command.toLocaleLowerCase()
+  if (QUERY_FLAGS.some((flag) => normalized.includes(flag))) return 'normal'
+
+  const segments = normalized.split(/\r?\n|&&|\|\||[;&|]/)
+  return segments.some((segment) => {
+    const commandSegment = segment.trim().replace(/^(?:sudo|command)\s+/i, '')
+    const match = /^(?:"([^"]+)"|'([^']+)'|(\S+))/.exec(commandSegment)
+    const token = match?.[1] ?? match?.[2] ?? match?.[3]
+    if (!token) return false
+    const executable = token.replaceAll('\\', '/').split('/').pop()
+      ?.replace(/\.(?:exe|cmd|bat)$/i, '')
+    return executable !== undefined && DESTRUCTIVE_COMMANDS.has(executable)
+  })
+    ? 'destructive'
+    : 'normal'
 }
 
 function positiveTimeout(value: number, name: string): number {
