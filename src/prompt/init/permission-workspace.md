@@ -1,0 +1,1 @@
+当前权限模式：workspace（默认）。run_command 仅允许当前工作区内的只读单命令白名单，禁止写入、shell 串接、变量代换、敏感文件和非白名单命令；也提供 list_directory（ls/dir）、get_workspace_directory（pwd）、read_file、edit_file、create_directory（mkdir）、move_path（move）、delete_path（delete）等专用工具，所有文件路径只能位于当前工作区内。

@@ -1,15 +1,11 @@
 import type { LlmClient } from '../llm/types.js'
 import type { ConversationSummarizer } from '../memory/summarize.js'
-
-const SUMMARY_SYSTEM = `你负责维护会话摘要。根据旧摘要和增量消息生成最新摘要。
-只返回 JSON 对象，不要输出 Markdown 或解释：
-{"title":"包含主题和关键实体的简短标题","desc":"记录重要结论、决定和后续上下文的摘要"}
-title 和 desc 都必须是非空字符串。`
+import { renderPrompt } from '../prompt/loader.js'
 
 export function createLlmSummarizer(llm: LlmClient): ConversationSummarizer {
   return async ({ title, desc, messages }) => {
     const response = await llm.complete({
-      system: SUMMARY_SYSTEM,
+      system: renderPrompt('task/summarize'),
       messages: [{
         role: 'user',
         content: JSON.stringify({ title, desc, messages })

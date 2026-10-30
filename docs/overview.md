@@ -1,6 +1,6 @@
 # 项目概览
 
-> 最后更新：2026-10-29
+> 最后更新：2026-10-30
 
 ## 定位
 
@@ -58,6 +58,11 @@ src/
 │   ├── media.ts            #   表情包保存与检索
 │   ├── tools.ts            #   8 个原生记忆工具
 │   └── index.ts            #   MemoryService 统一入口
+├── prompt/                 # Markdown 提示词资源与同步模板加载器
+│   ├── loader.ts           #   固定名称加载、缓存与 {{variable}} 替换
+│   ├── init/               #   Agent/会话初始化系统提示与记忆包装
+│   ├── session/            #   用户输入时间、权限通知与运行轮次注入
+│   └── task/               #   会话摘要与命令审核独立任务提示
 ├── sandbox/                # OS 沙箱，暂缓
 └── data/                   # 运行时数据与工具资源
     ├── memory/             #   MEMORY.md 与 memory.db
@@ -75,6 +80,7 @@ src/
 | 工具调用 `tool_calling` | 已完成 | 注册校验调度、10 个文件工具、三档权限命令工具、Tavily `web_search`、工作区管理 |
 | LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议与五档 effort 映射 |
 | Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
+| 提示词资源 `prompt` | 已完成 | 初始化、每轮注入与独立任务提示统一使用 Markdown，构建同步到 `dist/prompt` |
 | CLI 对话入口 `cli` | 已完成 | 连续对话、流式输出、`/cd` 工作区切换、两档权限与命令审批 |
 | Web UI `ui` | 已完成 | Vue 3 + 本机 Node 服务，真实 Agent SSE、工具轨迹、审批、停止、严格归档新对话、只读历史、权限与工作区切换、安全 Markdown，生产静态托管 |
 | 沙箱 `sandbox` | 暂缓 | 强隔离延后，当前命令权限不构成安全边界 |
@@ -127,6 +133,7 @@ src/
 ### Agent 与 CLI
 
 - Agent 单次请求串联记忆加载、LLM、工具执行、结果回传与消息落库，支持最大 8 批工具、取消超时、串行请求和中断恢复。流式事件包含 `text_delta`、`thinking_delta`、`tool_call`、`tool_result`；思考块随助手消息落库，但不进入全文索引和历史摘要文本，CLI 不显示思考内容。单次 `AgentRunOptions.effort` 会贯穿该运行的全部工具轮与最终请求，不写入历史消息，排队或后续运行不继承。
+- 每条新用户消息在发往 LLM 前注入 `[运行环境当前时间：本地 ISO 时间（时区）]`，格式包含年月日、时分秒、UTC 偏移和 IANA 时区名称；每次用户输入重新取值，后续工具轮保留该次时间上下文。SQLite、会话恢复、摘要和长期记忆仍保存用户原文，不写入时间前缀。
 - 人工审批期间暂停 Agent 总超时，嵌套审批按深度配对；恢复后沿用剩余预算，不重置完整超时，外部取消仍然有效。审批自身与工具执行超时继续生效。
 - 默认上下文预算为 10 万字符，优先压缩旧工具结果并保持调用配对；原始 SQLite 消息不修改。
 - `npm run cli` 构建并启动交互 CLI。默认工作区：Windows 为 `~/Documents/humanize-agent-work`，Linux/macOS 为 `~/humanize-agent-work`，启动时自动创建。
@@ -136,6 +143,13 @@ src/
 - CLI 系统提示将当前工作区绝对路径、权限模式和 `run_command` 能力作为优先于历史消息的运行状态注入：`workspace` 明确 `run_command` 只允许当前工作区内的只读单命令白名单，禁止命令写入、shell 组合、代换、敏感文件及非白名单命令，同时仍提供专用文件写入工具；`approval` 明确包含 workspace 全部能力、白名单免审批及白名单外命令审批。`/cd` 或权限切换重建会话时使用最新状态，并明确相对路径基准、当前目录读取方式、专用工具优先和工作区边界。
 - CLI/WebUI 系统提示额外注入「工具调用规则」以减少冗余调用：告知每任务最多 8 轮工具，结果够用即作答、不为补充细节重复查询，先确认关键参数（如地点）再查询而非估值试探，互不依赖的调用同轮并发，专用工具优先、`run_command` 兜底，失败后理解原因再调整、同类方法失败两次即换思路。
 - 内置 bundle 只在 CLI 初始化时加载一次：`workspace` 仅注册 `effect=read` 的内置工具，`approval` 注册全部；`/cd` 和权限切换复用 MCP 连接，初始化失败及 REPL 退出统一幂等关闭。构建会复制 `SKILL.md` 和 JSON 到 `dist/data/tools/`。
+
+### 提示词资源
+
+- 固定系统提示与注入包装统一放在 `src/prompt/**/*.md`，动态工作区路径、权限模式、Skill 索引、记忆正文、用户消息和待审命令仍由代码生成，不将运行时数据写回模板。
+- `init/` 保存 Agent/会话初始化内容：默认系统提示、四种权限上下文、工作区状态、工具调用规则、Skill 索引及核心/最近记忆包装；`session/` 保存每条用户输入的时间前缀、一次性权限通知和最终工具轮限制；`task/` 保存会话摘要与命令安全审核的独立任务提示。
+- `renderPrompt` 按固定名称同步读取并缓存模板，仅支持 `{{variable}}` 单次替换，缺少变量立即报错，不引入条件、循环或异步模板引擎。CLI/WebUI、Agent、Skill、最近记忆、摘要和命令审核均通过同一入口加载，原有 system 拼接顺序、消息角色、权限通知入库及时间前缀不入库语义保持不变。
+- 后端构建除内置 Skill/MCP 资源外，还将全部 15 份提示 Markdown 镜像复制到 `dist/prompt/`；加载器基于 `import.meta.url` 定位资源，生产运行不依赖 `src` 或当前工作目录。
 
 ### Web UI
 
@@ -149,13 +163,14 @@ src/
 
 ## 已验证能力
 
-本轮全量自动化验证：27 个测试文件共 381 项通过、2 项平台相关测试跳过，TypeScript 类型检查、后端与 Vue 生产构建均通过。新增覆盖三种协议五档 effort 映射与缺省省略、Agent 多工具轮档位一致、Web 档位校验与真实模型 state、本地偏好和 Ultra→max 运行快照；此前覆盖思考增量、命令审核、严格归档、只读历史、外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
+本轮全量自动化验证：28 个测试文件共 399 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建通过。新增覆盖 15 份 Markdown 模板加载、变量完整替换、缺变量报错和美元符号安全替换；生产构建后已从项目目录之外直接加载 `dist/prompt/loader.js` 并成功渲染时间模板，确认资源不依赖 `src` 或 cwd；本机 3210 UI 服务已在空闲状态重启，`GET /api/state` 返回正常且 `running=false`。此前覆盖每条用户消息的时间上下文、连续输入重新取值及持久化原文不受污染，以及三种协议五档 effort、Agent 多工具轮档位一致、Web 档位校验、思考增量、命令审核、严格归档、只读历史、外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
 
 真实 API（非 mock）已验证：
 
 - Anthropic 调用 `read_file` 读取 `README.md` 生成项目总结，读取 `.gitignore` 给出配置建议。
 - OpenAI Responses 通过 `function_call` / `function_call_output` 完成同样的文件读取与总结。
 - 真实 MiniMax `MiniMax-M3.1-Flash`（Anthropic 协议）以 `output_config.effort=low` 完成短请求，服务接受档位并正常返回 thinking 与 text；该验证只确认协议生效，不以耗时判断档位。
+- 真实 Agent 在时间注入后回答 `2026年10月30日 10:53:33（Asia/Taipei，UTC+8）`，与运行环境一致；对应 SQLite 用户消息仍为原始问题，未包含时间前缀。
 - 三种客户端分别调用 `list_directory` 查看工作区根目录，均正确返回 13 个条目并生成中文总结，完整走通"模型发起调用 → 工具执行 → 结果回传 → 模型总结"链路。
 - 真实 CLI 查询 `CloudLedger` 时仅调用一次 `stat_path`，未执行多余 shell。
 - 真实 CLI 对 `rm -rf` 审批显示高风险警告，输入拒绝后返回 `forbidden`，命令未执行。

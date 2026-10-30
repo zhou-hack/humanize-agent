@@ -8,12 +8,7 @@ import { createLlmCommandJudge } from '../tools/tool_calling/index.js'
 import { runRepl } from './repl.js'
 import { createCliSession } from './session.js'
 import { createLlmSummarizer } from './summarize.js'
-
-const DEFAULT_SYSTEM = `你是 humanize-agent。当前平台：${process.platform}。使用用户的语言回答。
-需要查看或修改工作区时优先使用专用工具，只有专用工具不足时才使用 shell，不要猜测文件内容。
-查询路径是否存在使用 stat_path，按名称查找文件或目录使用 find_path。
-只读查询禁止删除、移动、重命名或写入任何内容。
-未经用户明确要求，不得访问或操作当前工作区之外的目录。`
+import { renderPrompt } from '../prompt/loader.js'
 
 async function main(): Promise<void> {
   let memory: MemoryService | undefined
@@ -46,7 +41,7 @@ async function main(): Promise<void> {
         llm,
         requestApproval,
         commandJudge,
-        system: DEFAULT_SYSTEM,
+        system: renderPrompt('init/default-system', { platform: process.platform }),
         onBuiltinWarning: (message) => {
           process.stderr.write(`警告：${message}\n`)
         }

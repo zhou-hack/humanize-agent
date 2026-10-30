@@ -1,4 +1,5 @@
 import type { ConversationIndex, MemoryStore } from './store.js'
+import { renderPrompt } from '../prompt/loader.js'
 
 export const RECENT_WINDOW_MS = 72 * 60 * 60 * 1000
 
@@ -20,7 +21,7 @@ export function formatRecentConversationIndex(conversations: ConversationIndex[]
   const lines = conversations.map((conversation) =>
     `- [${formatLocalDate(conversation.lastMessageAt)}] ${conversation.title}: ${conversation.desc} (id: ${conversation.id})`
   )
-  return ['最近 3 天的对话：', ...lines].join('\n')
+  return renderPrompt('init/memory-recent', { entries: lines.join('\n') })
 }
 
 function formatLocalDate(timestamp: number): string {

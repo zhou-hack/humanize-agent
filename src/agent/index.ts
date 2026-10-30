@@ -9,6 +9,7 @@ import type {
   LlmToolUseBlock
 } from '../llm/types.js'
 import type { MemoryService } from '../memory/index.js'
+import { renderPrompt } from '../prompt/loader.js'
 import type { StoredMessage } from '../memory/store.js'
 import type { ToolExecutor } from '../tools/tool_calling/executor.js'
 import type { ToolRegistry } from '../tools/tool_calling/registry.js'
@@ -154,7 +155,7 @@ export class Agent {
       }
 
       await this.options.memory.recordMessage({ role: 'user', content: runOptions.text })
-      this.messages.push({ role: 'user', content: runOptions.text })
+      this.messages.push({ role: 'user', content: withCurrentTime(runOptions.text) })
 
       let toolRounds = 0
       while (true) {
@@ -513,16 +514,34 @@ function truncateWithMark(content: string, target: number, mark: string): string
   return content.slice(0, Math.max(0, target - mark.length)) + mark
 }
 
+function withCurrentTime(text: string): string {
+  return renderPrompt('session/current-time', { time: formatCurrentTime(new Date()), text })
+}
+
+function formatCurrentTime(date: Date): string {
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  const offsetMinutes = -date.getTimezoneOffset()
+  const offsetSign = offsetMinutes >= 0 ? '+' : '-'
+  const absoluteOffset = Math.abs(offsetMinutes)
+  const localTime = [
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
+    `${offsetSign}${pad(Math.floor(absoluteOffset / 60))}:${pad(absoluteOffset % 60)}`
+  ].join('')
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  return `${localTime}（${timezone}）`
+}
+
 function composeSystem(base: string | undefined, core: string, recent: string): string | undefined {
   const sections: string[] = []
   if (base?.trim()) sections.push(base.trim())
-  if (core.trim()) sections.push(`MEMORY.md 核心记忆：\n${core.trim()}`)
+  if (core.trim()) sections.push(renderPrompt('init/memory-core', { content: core.trim() }))
   if (recent.trim()) sections.push(recent.trim())
   return sections.length > 0 ? sections.join('\n\n') : undefined
 }
 
 function withToolRoundLimit(system: string | undefined): string {
-  const instruction = '工具调用轮数已达上限。请根据已有结果直接回答，不要再调用工具。'
+  const instruction = renderPrompt('session/tool-round-limit')
   return system ? `${system}\n\n${instruction}` : instruction
 }
 

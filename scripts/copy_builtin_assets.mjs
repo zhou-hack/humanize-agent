@@ -16,3 +16,15 @@ await cp(source, destination, {
     return path.basename(entry) === 'SKILL.md' || path.extname(entry) === '.json'
   }
 })
+
+const promptSource = path.join(projectRoot, 'src', 'prompt')
+const promptDestination = path.join(projectRoot, 'dist', 'prompt')
+await mkdir(promptDestination, { recursive: true })
+await cp(promptSource, promptDestination, {
+  recursive: true,
+  force: true,
+  filter: async (entry) => {
+    const stat = await lstat(entry)
+    return stat.isDirectory() || path.extname(entry) === '.md'
+  }
+})
