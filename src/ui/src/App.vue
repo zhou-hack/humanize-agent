@@ -14,7 +14,7 @@ const collapsed = ref(true)
 const workspaceDialogOpen = ref(false)
 const historyDialogOpen = ref(false)
 const {
-  msgs, steps, tokens, status, running, newChatBusy, mode, modeBusy, workspace,
+  msgs, steps, tokens, status, running, newChatBusy, effort, model, mode, modeBusy, workspace,
   initialize, setMode, run, stop, decide, changeWorkspace, newChat
 } = useAgentRun()
 const { toggleTheme } = useTheme()
@@ -75,11 +75,15 @@ async function handleStop() {
     <ChatPane
       :msgs="msgs"
       :running="running"
+      :new-chat-busy="newChatBusy"
       :collapsed="collapsed"
+      :effort="effort"
+      :model-name="model"
       :mode="mode"
       :mode-busy="modeBusy"
       :workspace="workspace"
       @update:mode="handleMode"
+      @update:effort="value => effort = value"
       @send="run"
       @stop="handleStop"
       @decide="decide"

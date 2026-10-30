@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ApprovalCard from './ApprovalCard.vue'
 import { renderMarkdown } from '../markdown'
 
@@ -10,12 +10,15 @@ const props = defineProps({
 const emit = defineEmits(['decide'])
 const copied = ref(false)
 const agentHtml = computed(() => renderMarkdown(props.msg.text))
+const thinkOpen = ref(Boolean(props.msg.streaming))
+watch(() => props.msg.streaming, (streaming) => { thinkOpen.value = Boolean(streaming) })
 
 const rootClass = computed(() => {
   const base = {
     user: 'msg user',
     agent: 'msg agent',
     chip: 'inline-step',
+    thinking: 'msg-think',
     approval: 'aw' + (props.msg.resolved ? ' done' : ''),
     system: 'msg-sys'
   }[props.msg.kind] ?? 'msg-sys'
@@ -47,6 +50,11 @@ function copyText(text) {
     </template>
 
     <template v-else-if="msg.kind === 'chip'">{{ msg.text }}</template>
+
+    <details v-else-if="msg.kind === 'thinking'" :open="thinkOpen" @toggle="thinkOpen = $event.target.open">
+      <summary>{{ msg.streaming ? '思考中…' : '思考过程' }}</summary>
+      <div class="think-body">{{ msg.text }}</div>
+    </details>
 
     <ApprovalCard
       v-else-if="msg.kind === 'approval'"

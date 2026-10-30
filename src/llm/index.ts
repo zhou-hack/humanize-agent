@@ -16,6 +16,7 @@ export {
 } from './openai/index.js'
 export type {
   LlmClient,
+  LlmEffort,
   LlmInputBlock,
   LlmMessage,
   LlmOutputBlock,

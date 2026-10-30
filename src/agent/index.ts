@@ -1,6 +1,7 @@
 import { performance } from 'node:perf_hooks'
 import type {
   LlmClient,
+  LlmEffort,
   LlmMessage,
   LlmRequest,
   LlmResponse,
@@ -36,6 +37,7 @@ export class AgentError extends Error {
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
+  | { type: 'thinking_delta'; text: string }
   | { type: 'tool_call'; round: number; call: ToolCall }
   | { type: 'tool_result'; round: number; toolUseId: string; result: ToolResult }
 
@@ -52,6 +54,7 @@ export interface AgentOptions {
 export interface AgentRunOptions {
   text: string
   imageIds?: string[]
+  effort?: LlmEffort
   signal?: AbortSignal
   timeoutMs?: number
   onEvent?: (event: AgentEvent) => void
@@ -161,6 +164,7 @@ export class Agent {
           messages: limitContextMessages(this.messages, this.maxContextChars),
           system: finalizing ? withToolRoundLimit(this.system) : this.system,
           tools: finalizing ? undefined : this.options.registry.list(),
+          ...(runOptions.effort !== undefined ? { effort: runOptions.effort } : {}),
           signal
         }
         const response = await this.callLlm(request, runOptions.onEvent, signal)
@@ -288,7 +292,11 @@ export class Agent {
     signal: AbortSignal
   ): Promise<LlmResponse> {
     const pending = onEvent
-      ? this.options.llm.stream(request, (text) => onEvent({ type: 'text_delta', text }))
+      ? this.options.llm.stream(
+          request,
+          (text) => onEvent({ type: 'text_delta', text }),
+          (text) => onEvent({ type: 'thinking_delta', text })
+        )
       : this.options.llm.complete(request)
     return waitFor(pending, signal)
   }

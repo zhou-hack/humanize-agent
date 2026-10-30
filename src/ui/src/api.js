@@ -34,11 +34,11 @@ export async function postJson(path, body = {}) {
   return expectJson(response)
 }
 
-export async function streamAgentRun(text, { signal, onEvent }) {
+export async function streamAgentRun(text, { signal, effort, onEvent }) {
   const response = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify({ text, ...(effort ? { effort } : {}) }),
     signal
   })
   if (!response.ok) await throwResponseError(response)

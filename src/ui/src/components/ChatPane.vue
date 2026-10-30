@@ -2,29 +2,35 @@
 import { ref, watch, nextTick } from 'vue'
 import MessageItem from './MessageItem.vue'
 import PermSwitch from './PermSwitch.vue'
+import EffortSlider from './EffortSlider.vue'
 
 const props = defineProps({
   msgs: { type: Array, required: true },
   running: Boolean,
+  newChatBusy: Boolean,
   collapsed: Boolean,
+  effort: { type: String, default: 'high' },
+  modelName: { type: String, default: '' },
   mode: { type: String, default: 'workspace' },
   modeBusy: Boolean,
   workspace: { type: String, default: '' }
 })
-const emit = defineEmits(['send', 'stop', 'decide', 'toggle-bench', 'update:mode', 'change-workspace'])
+const emit = defineEmits(['send', 'stop', 'decide', 'toggle-bench', 'update:mode', 'update:effort', 'change-workspace'])
 
 const draft = ref('')
 const listEl = ref(null)
 
 function send() {
   const text = draft.value.trim()
-  if (!text || props.running) return
+  if (!text || props.running || props.newChatBusy) return
   emit('send', text)
   draft.value = ''
 }
 
 function onEnter(e) {
-  if (!e.isComposing) send()
+  if (e.shiftKey || e.isComposing) return
+  e.preventDefault()
+  send()
 }
 
 watch(() => props.msgs, () => {
@@ -74,22 +80,34 @@ function isLastOfGroup(i) {
     </div>
 
     <div class="composer">
-      <PermSwitch
-        :mode="mode"
-        :disabled="running || modeBusy"
-        @update:mode="m => emit('update:mode', m)" />
-      <input
+      <textarea
         v-model="draft"
-        placeholder="描述任务"
-        @keydown.enter="onEnter">
-      <button
-        :class="running ? 'danger' : 'primary'"
-        :disabled="!running && !draft.trim()"
-        @click="running ? emit('stop') : send()">
-        <svg v-if="!running" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        <svg v-else class="icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        {{ running ? '中止' : '发送' }}
-      </button>
+        class="composer-input"
+        placeholder="给 Agent 发送消息…"
+        rows="2"
+        @keydown.enter="onEnter"></textarea>
+      <div class="composer-toolbar">
+        <PermSwitch
+          :mode="mode"
+          :disabled="running || newChatBusy || modeBusy"
+          @update:mode="m => emit('update:mode', m)" />
+        <span class="grow"></span>
+        <EffortSlider
+          :effort="effort"
+          :disabled="running || newChatBusy"
+          :model-name="modelName"
+          @update:effort="value => emit('update:effort', value)" />
+        <button
+          class="composer-send"
+          :class="running ? 'danger' : 'primary'"
+          :title="running ? '中止' : '发送'"
+          :aria-label="running ? '中止' : '发送'"
+          :disabled="newChatBusy || (!running && !draft.trim())"
+          @click="running ? emit('stop') : send()">
+          <svg v-if="!running" class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg>
+          <svg v-else class="icon" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+      </div>
     </div>
   </section>
 </template>

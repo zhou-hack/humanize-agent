@@ -30,8 +30,12 @@ async function main(): Promise<void> {
     })
     const memoryService = memory
     const commandJudge = createLlmCommandJudge({ llm })
+    const model = (process.env.LLM_PROVIDER ?? 'anthropic') === 'openai'
+      ? process.env.OPENAI_MODEL
+      : process.env.ANTHROPIC_MODEL
     runtime = await createUiRuntime({
       memory: memoryService,
+      ...(model ? { model } : {}),
       createSession: (requestApproval) => createCliSession({
         memory: memoryService,
         llm,

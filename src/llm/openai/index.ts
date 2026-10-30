@@ -47,7 +47,8 @@ export class OpenAILlmClient implements LlmClient {
 
   async stream(
     request: LlmRequest,
-    onText?: (delta: string) => void
+    onText?: (delta: string) => void,
+    onThinking?: (delta: string) => void
   ): Promise<LlmResponse> {
     try {
       const stream = this.client.responses.stream({
@@ -58,6 +59,10 @@ export class OpenAILlmClient implements LlmClient {
       })
       if (onText) {
         stream.on('response.output_text.delta', (event) => onText(event.delta))
+      }
+      if (onThinking) {
+        stream.on('response.reasoning_text.delta', (event) => onThinking(event.delta))
+        stream.on('response.reasoning_summary_text.delta', (event) => onThinking(event.delta))
       }
       return mapResponse(await stream.finalResponse())
     } catch (error) {
@@ -85,8 +90,9 @@ export class OpenAILlmClient implements LlmClient {
             strict: false
           })) }
         : {}),
-      ...(request.temperature !== undefined ? { temperature: request.temperature } : {})
-    }
+      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.effort !== undefined ? { reasoning: { effort: request.effort } } : {})
+    } as ResponseCreateParamsNonStreaming
   }
 }
 
@@ -129,23 +135,25 @@ function toResponseInput(messages: LlmRequest['messages']): ResponseInput {
       return [{ role: message.role, content: message.content }]
     }
 
-    return message.content.map((block): ResponseInputItem => {
+    return message.content.flatMap((block): ResponseInputItem[] => {
       switch (block.type) {
         case 'text':
-          return { role: message.role, content: block.text }
+          return [{ role: message.role, content: block.text }]
+        case 'thinking':
+          return []
         case 'tool_use':
-          return {
+          return [{
             type: 'function_call',
             call_id: block.id,
             name: block.name,
             arguments: JSON.stringify(block.input)
-          }
+          }]
         case 'tool_result':
-          return {
+          return [{
             type: 'function_call_output',
             call_id: block.toolUseId,
             output: block.content
-          }
+          }]
       }
     })
   })
@@ -160,6 +168,11 @@ function mapResponse(response: Response): LlmResponse {
     model: response.model,
     stopReason: response.incomplete_details?.reason ?? response.status ?? null,
     content: response.output.flatMap((item): LlmOutputBlock[] => {
+      if (item.type === 'reasoning') {
+        const parts = item.content?.length ? item.content : item.summary
+        const thinking = parts.map((part) => part.text).join('\n')
+        return thinking ? [{ type: 'thinking', thinking }] : []
+      }
       if (item.type === 'message') {
         return item.content.flatMap((block): LlmOutputBlock[] =>
           block.type === 'output_text' ? [{ type: 'text', text: block.text }] : []

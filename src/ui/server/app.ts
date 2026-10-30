@@ -9,7 +9,7 @@ import {
 } from 'node:http'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { AgentEvent } from '../../agent/index.js'
+import type { AgentEvent, AgentRunOptions } from '../../agent/index.js'
 import type { CliSession } from '../../cli/session.js'
 import { getConversationMessages, type Conversation, type MemoryService } from '../../memory/index.js'
 import type {
@@ -19,12 +19,14 @@ import type {
 
 const DEFAULT_STATIC_ROOT = fileURLToPath(new URL('../web/', import.meta.url))
 const MAX_BODY_BYTES = 64 * 1024
+const EFFORTS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 'max'])
 
 type UiSession = Pick<CliSession, 'run' | 'snapshot' | 'cd' | 'setPermission' | 'close'>
 
 export interface UiRuntimeOptions {
   memory: Pick<MemoryService, 'startNewConversation' | 'store'>
   createSession: (requestApproval: CommandApprovalHandler) => Promise<UiSession>
+  model?: string
   staticRoot?: string
 }
 
@@ -71,6 +73,7 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
 
   const state = (): Record<string, unknown> => ({
     ...session.snapshot(),
+    model: options.model ?? null,
     running: active !== undefined || runStarting
   })
 
@@ -197,8 +200,10 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
           if (typeof body.text !== 'string' || !body.text.trim()) {
             throw new HttpError(400, 'text 不能为空')
           }
+          const effort = parseEffort(body.effort)
           await runAgent({
             text: body.text.trim(),
+            ...(effort !== undefined ? { effort } : {}),
             response,
             session,
             setActive: (run) => { active = run },
@@ -249,6 +254,7 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
 
 interface RunAgentOptions {
   text: string
+  effort?: AgentRunOptions['effort']
   response: ServerResponse
   session: UiSession
   setActive: (run: ActiveRun) => void
@@ -287,6 +293,9 @@ async function runAgent(options: RunAgentOptions): Promise<void> {
       case 'text_delta':
         options.publish('message_delta', { text: event.text })
         break
+      case 'thinking_delta':
+        options.publish('thinking_delta', { text: event.text })
+        break
       case 'tool_call':
         options.publish('tool_call', {
           callId: event.call.id,
@@ -306,6 +315,7 @@ async function runAgent(options: RunAgentOptions): Promise<void> {
   try {
     const result = await session.run({
       text: options.text,
+      ...(options.effort !== undefined ? { effort: options.effort } : {}),
       signal: run.controller.signal,
       onEvent
     })
@@ -366,6 +376,14 @@ function historyConversation(conversation: Conversation): Record<string, unknown
     last_message_at: conversation.lastMessageAt,
     summarized_at: conversation.summarizedAt
   }
+}
+
+function parseEffort(value: unknown): AgentRunOptions['effort'] {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !EFFORTS.has(value)) {
+    throw new HttpError(400, 'effort 必须是 low、medium、high、xhigh 或 max')
+  }
+  return value as NonNullable<AgentRunOptions['effort']>
 }
 
 function integerParam(

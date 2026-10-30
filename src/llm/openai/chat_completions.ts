@@ -65,8 +65,9 @@ export class OpenAIChatCompletionsLlmClient implements LlmClient {
             }
           })) }
         : {}),
-      ...(request.temperature !== undefined ? { temperature: request.temperature } : {})
-    }
+      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.effort !== undefined ? { reasoning_effort: request.effort } : {})
+    } as ChatCompletionCreateParamsNonStreaming
   }
 }
 

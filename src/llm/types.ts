@@ -5,6 +5,12 @@ export interface LlmTextBlock {
   text: string
 }
 
+export interface LlmThinkingBlock {
+  type: 'thinking'
+  thinking: string
+  signature?: string
+}
+
 export interface LlmToolUseBlock {
   type: 'tool_use'
   id: string
@@ -19,13 +25,15 @@ export interface LlmToolResultBlock {
   isError?: boolean
 }
 
-export type LlmInputBlock = LlmTextBlock | LlmToolUseBlock | LlmToolResultBlock
-export type LlmOutputBlock = LlmTextBlock | LlmToolUseBlock
+export type LlmInputBlock = LlmTextBlock | LlmThinkingBlock | LlmToolUseBlock | LlmToolResultBlock
+export type LlmOutputBlock = LlmTextBlock | LlmThinkingBlock | LlmToolUseBlock
 
 export interface LlmMessage {
   role: 'user' | 'assistant'
   content: string | LlmInputBlock[]
 }
+
+export type LlmEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export interface LlmRequest {
   messages: LlmMessage[]
@@ -34,6 +42,7 @@ export interface LlmRequest {
   model?: string
   maxTokens?: number
   temperature?: number
+  effort?: LlmEffort
   signal?: AbortSignal
 }
 
@@ -50,5 +59,9 @@ export interface LlmResponse {
 
 export interface LlmClient {
   complete(request: LlmRequest): Promise<LlmResponse>
-  stream(request: LlmRequest, onText?: (delta: string) => void): Promise<LlmResponse>
+  stream(
+    request: LlmRequest,
+    onText?: (delta: string) => void,
+    onThinking?: (delta: string) => void
+  ): Promise<LlmResponse>
 }

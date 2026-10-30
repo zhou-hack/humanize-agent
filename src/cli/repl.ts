@@ -175,6 +175,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         output.write(`工具: ${text}\n`)
       }
       const onEvent = (event: AgentEvent): void => {
+        if (event.type === 'thinking_delta') return
         if (event.type === 'text_delta') {
           if (!textOpen) {
             output.write('助手: ')

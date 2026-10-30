@@ -1,8 +1,19 @@
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { getState, postJson, streamAgentRun } from '../api'
 
 let seq = 0
 const uid = () => 'm' + (++seq)
+const EFFORT_VALUES = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra']
+const EFFORT_STORAGE_KEY = 'humanize-effort'
+
+function readStoredEffort() {
+  try {
+    const value = typeof localStorage === 'undefined' ? null : localStorage.getItem(EFFORT_STORAGE_KEY)
+    return EFFORT_VALUES.includes(value) ? value : 'high'
+  } catch {
+    return 'high'
+  }
+}
 
 export function useAgentRun() {
   const msgs = ref([])
@@ -11,12 +22,28 @@ export function useAgentRun() {
   const status = ref('连接中')
   const running = ref(false)
   const newChatBusy = ref(false)
+  const effort = ref(readStoredEffort())
+  const model = ref('')
   const mode = ref('workspace')
   const modeBusy = ref(false)
   const workspace = ref('')
 
+  watch(effort, (value) => {
+    try {
+      if (EFFORT_VALUES.includes(value)) localStorage.setItem(EFFORT_STORAGE_KEY, value)
+    } catch {
+      // 存储不可用时仅保留当前页面内的选择
+    }
+  })
+
   let activeController = null
   let streamingEl = null
+  let thinkingEl = null
+
+  function endThinking() {
+    if (thinkingEl) thinkingEl.streaming = false
+    thinkingEl = null
+  }
 
   function dispatch(ev) {
     switch (ev.type) {
@@ -25,7 +52,17 @@ export function useAgentRun() {
         status.value = '执行中'
         break
 
+      case 'thinking_delta':
+        streamingEl = null
+        if (!thinkingEl) {
+          msgs.value.push({ id: uid(), kind: 'thinking', text: '', streaming: true })
+          thinkingEl = msgs.value[msgs.value.length - 1]
+        }
+        thinkingEl.text += ev.text
+        break
+
       case 'message_delta':
+        endThinking()
         if (!streamingEl) {
           msgs.value.push({ id: uid(), kind: 'agent', text: '', streaming: true })
           streamingEl = msgs.value[msgs.value.length - 1]
@@ -34,6 +71,7 @@ export function useAgentRun() {
         break
 
       case 'tool_call':
+        endThinking()
         streamingEl = null
         steps.value.push({
           id: ev.callId,
@@ -97,8 +135,10 @@ export function useAgentRun() {
 
   async function run(text) {
     if (!text?.trim() || running.value || newChatBusy.value) return
+    const runEffort = effort.value === 'ultra' ? 'max' : effort.value
     steps.value = []
     streamingEl = null
+    thinkingEl = null
     running.value = true
     status.value = '执行中'
     msgs.value.push({ id: uid(), kind: 'user', text: text.trim() })
@@ -107,6 +147,7 @@ export function useAgentRun() {
     try {
       await streamAgentRun(text.trim(), {
         signal: activeController.signal,
+        effort: runEffort,
         onEvent: dispatch
       })
       if (running.value) finishRun('done')
@@ -163,6 +204,7 @@ export function useAgentRun() {
 
   function applyState(state) {
     mode.value = state.permission
+    model.value = state.model || ''
     workspace.value = state.workspace.current_directory
     running.value = state.running
   }
@@ -171,6 +213,7 @@ export function useAgentRun() {
     running.value = false
     status.value = result === 'done' ? '完成' : result === 'aborted' ? '已中止' : '错误'
     streamingEl = null
+    thinkingEl = null
     msgs.value.forEach(m => { if (m.streaming) m.streaming = false })
     steps.value.forEach(s => {
       if (s.status === 'wait') {
@@ -188,10 +231,11 @@ export function useAgentRun() {
     tokens.value = 0
     status.value = '待命'
     streamingEl = null
+    thinkingEl = null
   }
 
   return {
-    msgs, steps, tokens, status, running, newChatBusy, mode, modeBusy, workspace,
+    msgs, steps, tokens, status, running, newChatBusy, effort, model, mode, modeBusy, workspace,
     initialize, setMode, run, stop, decide, changeWorkspace, newChat
   }
 }

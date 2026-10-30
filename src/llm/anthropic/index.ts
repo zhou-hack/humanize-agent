@@ -72,13 +72,15 @@ export class AnthropicLlmClient implements LlmClient {
 
   async stream(
     request: LlmRequest,
-    onText?: (delta: string) => void
+    onText?: (delta: string) => void,
+    onThinking?: (delta: string) => void
   ): Promise<LlmResponse> {
     try {
       const stream = this.client.messages.stream(this.createParams(request), {
         signal: request.signal
       })
       if (onText) stream.on('text', (delta) => onText(delta))
+      if (onThinking) stream.on('thinking', (delta) => onThinking(delta))
       return mapResponse(await stream.finalMessage())
     } catch (error) {
       throw normalizeError(error)
@@ -103,8 +105,9 @@ export class AnthropicLlmClient implements LlmClient {
             input_schema: tool.parameters as Tool.InputSchema
           })) }
         : {}),
-      ...(request.temperature !== undefined ? { temperature: request.temperature } : {})
-    }
+      ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+      ...(request.effort !== undefined ? { output_config: { effort: request.effort } } : {})
+    } as MessageCreateParamsNonStreaming
   }
 }
 
@@ -139,24 +142,29 @@ function toMessageParam(message: LlmRequest['messages'][number]): MessageParam {
     role: message.role,
     content: typeof message.content === 'string'
       ? message.content
-      : message.content.map((block): ContentBlockParam => {
+      : message.content.flatMap((block): ContentBlockParam[] => {
           switch (block.type) {
             case 'text':
-              return { type: 'text', text: block.text }
+              return [{ type: 'text', text: block.text }]
+            // 没有签名的思考块（来自其他协议）无法回传给 Anthropic
+            case 'thinking':
+              return block.signature
+                ? [{ type: 'thinking', thinking: block.thinking, signature: block.signature }]
+                : []
             case 'tool_use':
-              return {
+              return [{
                 type: 'tool_use',
                 id: block.id,
                 name: block.name,
                 input: block.input
-              }
+              }]
             case 'tool_result':
-              return {
+              return [{
                 type: 'tool_result',
                 tool_use_id: block.toolUseId,
                 content: block.content,
                 ...(block.isError !== undefined ? { is_error: block.isError } : {})
-              }
+              }]
           }
         })
   } as MessageParam
@@ -169,6 +177,9 @@ function mapResponse(message: Message): LlmResponse {
     stopReason: message.stop_reason,
     content: message.content.flatMap((block): LlmOutputBlock[] => {
       if (block.type === 'text') return [{ type: 'text' as const, text: block.text }]
+      if (block.type === 'thinking') {
+        return [{ type: 'thinking' as const, thinking: block.thinking, signature: block.signature }]
+      }
       if (block.type === 'tool_use') {
         return [{
           type: 'tool_use' as const,

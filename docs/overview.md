@@ -31,6 +31,7 @@ src/
 │   └── summarize.ts        #   LLM 增量总结器
 ├── ui/                     # Vue 3 真实 Web UI，已完成
 │   ├── src/                #   对话、权限、审批、工具轨迹与 SSE 客户端
+│   ├── demo/               #   独立静态交互原型（effort-slider.html 思考强度滑块）
 │   └── server/             #   本机 Node API、Agent 编排与静态产物托管
 ├── llm/                    # LLM 适配层，已完成
 │   ├── types.ts            #   统一 LlmClient / LlmRequest / LlmResponse 协议
@@ -72,7 +73,7 @@ src/
 | --- | --- | --- |
 | 记忆 `memory` | 已完成 | 三级记忆、SQLite 持久化、增量总结、表情包、8 个原生工具 |
 | 工具调用 `tool_calling` | 已完成 | 注册校验调度、10 个文件工具、三档权限命令工具、Tavily `web_search`、工作区管理 |
-| LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议 |
+| LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议与五档 effort 映射 |
 | Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
 | CLI 对话入口 `cli` | 已完成 | 连续对话、流式输出、`/cd` 工作区切换、两档权限与命令审批 |
 | Web UI `ui` | 已完成 | Vue 3 + 本机 Node 服务，真实 Agent SSE、工具轨迹、审批、停止、严格归档新对话、只读历史、权限与工作区切换、安全 Markdown，生产静态托管 |
@@ -119,11 +120,13 @@ src/
 | OpenAI | Responses API | `OPENAI_API_MODE=responses`（默认） |
 | OpenAI | Chat Completions API | `OPENAI_API_MODE=chat_completions` |
 
-均支持普通调用、流式文本、函数工具、历史消息和受控错误，错误信息不包含密钥与原始响应正文。
+均支持普通调用、流式文本、函数工具、历史消息和受控错误，错误信息不包含密钥与原始响应正文。可选 `effort` 支持 `low/medium/high/xhigh/max`，分别映射为 Anthropic `output_config.effort`、Responses `reasoning.effort`、Chat Completions `reasoning_effort`；未提供时不添加字段，保持各服务端默认行为。
+
+思考内容统一映射为 `thinking` 块，`stream()` 的第三个参数 `onThinking` 接收思考增量：Anthropic 转发 `thinking` 事件并保留签名，历史中只回传带签名的思考块；Responses 转发 `reasoning_text` / `reasoning_summary_text` 增量，回传时丢弃思考块；Chat Completions 暂不解析思考内容。实测 MiniMax `MiniMax-M3.1-Flash` 走 Anthropic 协议时默认返回思考块（无需 `thinking` 参数），思考内容按约百字的分片逐步到达；一道简单推理题实测第 1.5 秒出现首段思考、4.2 秒出现正文，Responses 与 Chat Completions（`reasoning_content`）同样逐步推送。
 
 ### Agent 与 CLI
 
-- Agent 单次请求串联记忆加载、LLM、工具执行、结果回传与消息落库，支持最大 8 批工具、取消超时、串行请求和中断恢复。
+- Agent 单次请求串联记忆加载、LLM、工具执行、结果回传与消息落库，支持最大 8 批工具、取消超时、串行请求和中断恢复。流式事件包含 `text_delta`、`thinking_delta`、`tool_call`、`tool_result`；思考块随助手消息落库，但不进入全文索引和历史摘要文本，CLI 不显示思考内容。单次 `AgentRunOptions.effort` 会贯穿该运行的全部工具轮与最终请求，不写入历史消息，排队或后续运行不继承。
 - 人工审批期间暂停 Agent 总超时，嵌套审批按深度配对；恢复后沿用剩余预算，不重置完整超时，外部取消仍然有效。审批自身与工具执行超时继续生效。
 - 默认上下文预算为 10 万字符，优先压缩旧工具结果并保持调用配对；原始 SQLite 消息不修改。
 - `npm run cli` 构建并启动交互 CLI。默认工作区：Windows 为 `~/Documents/humanize-agent-work`，Linux/macOS 为 `~/humanize-agent-work`，启动时自动创建。
@@ -137,20 +140,22 @@ src/
 ### Web UI
 
 - `npm run ui` 构建后端与 Vue 并启动 `http://127.0.0.1:3210`；仅监听本机，生产服务器直接托管 `dist/ui/web/`，密钥、文件和 SQLite 不进入浏览器。开发模式使用 `npm run ui:api` 与 `npm run ui:dev`，Vite 将 `/api` 代理到 3210。
-- 本地 API 提供 state、permission、chat/new、runs、runs/stop、approvals、directories、workspace、history 和 history/:id/messages；`POST /api/runs` 通过 SSE 转发真实文本增量、工具调用/结果、审批请求与用量，单会话同时只执行一个任务，断连和停止都会取消运行并清理待审批。新建归档与运行启动在服务端互斥，重复归档返回 409。
-- 前端保留连续对话、实际工作区、工具轨迹、人工审批、停止、新对话、两档权限与主题切换；已移除 mock、模拟思考、产物预览、工具管理占位和完全开放模式。新对话成功完成严格归档后才重置后端上下文与本地消息，请求期间防止重复提交，失败保留当前页面。
+- 本地 API 提供 state、permission、chat/new、runs、runs/stop、approvals、directories、workspace、history 和 history/:id/messages；state 返回当前 provider 配置的真实模型名。`POST /api/runs` 校验可选五档 effort，非法值返回 400，并通过 SSE 转发真实文本增量、思考增量（`thinking_delta`）、工具调用/结果、审批请求与用量；单会话同时只执行一个任务，断连和停止都会取消运行并清理待审批。新建归档与运行启动在服务端互斥，重复归档返回 409。
+- 前端保留连续对话、实际工作区、工具轨迹、人工审批、停止、新对话、两档权限与主题切换；已移除 mock、模拟思考、产物预览、工具管理占位和完全开放模式。模型返回的真实思考内容实时流式显示在对应回复或工具调用之前：思考期间自动展开并显示「思考中…」，结束后自动收起为「思考过程」，可点击重新展开；只读历史暂不展示思考内容。新对话成功完成严格归档后才重置后端上下文与本地消息，请求期间防止重复提交，失败保留当前页面。
 - 左上角历史按钮打开独立两栏只读弹窗，支持全部归档和消息分页、空标题兜底；历史助手消息复用安全 Markdown，工具消息使用摘要。没有输入框、审批、恢复或历史写入操作，历史状态不进入实时 `msgs/steps/tokens`，可在 Agent 运行时查看。
 - 助手消息支持 GFM Markdown，渲染后清理脚本、事件属性和危险 URL；用户消息保持纯文本，复制仍使用原始 Markdown。
 - 点击顶部当前工作区会打开目录选择弹窗，可输入绝对路径、进入子目录、返回上级并确认切换；目录列表跳过私密目录与符号链接，任务运行期间前端和后端均禁止切换。
+- 输入区已改为真实多行 composer：Enter 发送、Shift+Enter 换行、IME 合成不误发，权限与推理强度位于工具栏。`EffortSlider` 提供低/中/高/极高/Max/Ultra 六档、恢复默认、拖动吸附、点击轨道和键盘操作；Max/Ultra 使用星空渐变、星点闪烁与流光，动画遵守 reduced-motion。默认高档并通过 localStorage 保存本地偏好，损坏或不可用时回退高档；每次运行使用发送前快照，Ultra 仅改变视觉并发送 `max`，运行或归档时禁止调整。弹层显示 state 中的真实模型名，无配置则隐藏，不提供模型切换。`src/ui/demo/effort-slider.html` 仍保留为独立原型，不参与构建。
 
 ## 已验证能力
 
-本轮全量自动化验证：27 个测试文件共 374 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建均通过。新增覆盖 workspace/approval 命令审核的放行、拒绝、危险转审批、审核失败、敏感路径不送审，以及判定结果解析和审核请求与会话隔离；此前覆盖严格归档失败保留现场、空标题归档与复合游标、只读历史 API、运行/归档互斥、新建防重复及失败不清空实时状态，以及外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
+本轮全量自动化验证：27 个测试文件共 381 项通过、2 项平台相关测试跳过，TypeScript 类型检查、后端与 Vue 生产构建均通过。新增覆盖三种协议五档 effort 映射与缺省省略、Agent 多工具轮档位一致、Web 档位校验与真实模型 state、本地偏好和 Ultra→max 运行快照；此前覆盖思考增量、命令审核、严格归档、只读历史、外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
 
 真实 API（非 mock）已验证：
 
 - Anthropic 调用 `read_file` 读取 `README.md` 生成项目总结，读取 `.gitignore` 给出配置建议。
 - OpenAI Responses 通过 `function_call` / `function_call_output` 完成同样的文件读取与总结。
+- 真实 MiniMax `MiniMax-M3.1-Flash`（Anthropic 协议）以 `output_config.effort=low` 完成短请求，服务接受档位并正常返回 thinking 与 text；该验证只确认协议生效，不以耗时判断档位。
 - 三种客户端分别调用 `list_directory` 查看工作区根目录，均正确返回 13 个条目并生成中文总结，完整走通"模型发起调用 → 工具执行 → 结果回传 → 模型总结"链路。
 - 真实 CLI 查询 `CloudLedger` 时仅调用一次 `stat_path`，未执行多余 shell。
 - 真实 CLI 对 `rm -rf` 审批显示高风险警告，输入拒绝后返回 `forbidden`，命令未执行。
@@ -198,6 +203,7 @@ TAVILY_API_KEY=                  # 可选；配置后注册 web_search
 
 - 项目说明与使用指南：[README.md](../README.md)
 - 项目协作与 Git 身份规则：[AGENTS.md](../AGENTS.md)
+- MiniMax-M3.1-Flash 思考强度实测（不可关闭思考，可选 low–max，默认接近 high）：[effort.md](../effort.md)
 - 记忆设计：[src/memory/DESIGN.md](../src/memory/DESIGN.md)
 - 工具调用设计：[src/tools/tool_calling/DESIGN.md](../src/tools/tool_calling/DESIGN.md)
 - 工作区管理：[src/tools/tool_calling/workspace_manager.md](../src/tools/tool_calling/workspace_manager.md)
