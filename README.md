@@ -1,38 +1,45 @@
 # humanize-agent
 
-> **Never Forget a Thing.**
->
-> 一个专注于长期记忆的 Agent
+一个具备长期记忆、真实工具调用和本机 Web UI 的 TypeScript Agent。
 
-humanize-agent 让 Agent 在持续交互中保留有价值的信息，并在后续对话中自然使用这些信息。项目包含长期记忆、Agent 主循环、工作区文件工具和可交互 CLI。
+humanize-agent 会把持续交互中有价值的信息保存下来，并在后续对话中自然使用。项目包含三级记忆、Agent 主循环、工作区文件工具、命令权限控制、交互 CLI，以及接入真实 Agent 的 Vue Web UI。
 
-## 注意
+> 项目仍在开发中，接口和行为可能调整。请勿直接用于生产环境或处理敏感信息。
 
-- 项目仍在开发中，功能将会有大变化。
-- 请勿将项目用于生产环境，或处理包含敏感信息的交互。
+## 功能概览
 
-## 已实现能力
+- **三级记忆**：`MEMORY.md` 核心记忆、近 72 小时会话索引、可检索的长期历史。
+- **完整 Agent 循环**：连续对话、流式输出、思考增量、工具多轮调用、取消超时和会话恢复。
+- **三种模型协议**：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions。
+- **工作区工具**：读取、编辑、搜索、路径查询、建目录、移动和删除，支持工作区切换。
+- **两档权限**：`workspace` 与 `approval`，包含只读命令白名单、模型安全审核和人工审批。
+- **真实 Web UI**：SSE 对话、工具轨迹、思考展示、推理强度、严格归档、只读历史和安全 Markdown。
+- **可扩展资源**：内置 Skill、本地 stdio MCP，以及可选的 Tavily 网页搜索。
 
-- 三级记忆：核心记忆、近期会话索引和可检索的长期历史。
-- Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 三种协议适配。
-- 连续对话、流式输出、会话恢复、工具调用和中断取消。
-- 工作区内读取、编辑、查找、建目录、移动和删除文件。
-- 默认仅放行工作区只读白名单命令的 `workspace` 模式，以及继承白名单、仅审批其他 shell 命令的 `approval` 模式。
+## 快速开始
 
-## 环境要求
+### 1. 环境要求
 
 - Node.js >= 22.13（记忆模块使用内置 `node:sqlite`）
 - npm
 
-## 安装
+安装后端依赖：
 
 ```bash
 npm install
 ```
 
+如需使用 Web UI，再安装前端依赖：
+
+```bash
+npm --prefix src/ui install
+```
+
+### 2. 配置模型
+
 在项目根目录创建 `.env`。该文件已被 Git 忽略，不要提交真实密钥。
 
-### 使用 Anthropic 协议
+使用 Anthropic Messages 协议：
 
 ```dotenv
 LLM_PROVIDER=anthropic
@@ -43,7 +50,7 @@ ANTHROPIC_MODEL=your-model
 ANTHROPIC_MAX_TOKENS=4096
 ```
 
-### 使用 OpenAI 协议
+或使用 OpenAI 协议：
 
 ```dotenv
 LLM_PROVIDER=openai
@@ -55,146 +62,171 @@ OPENAI_MAX_TOKENS=4096
 OPENAI_API_MODE=responses
 ```
 
-`OPENAI_API_MODE` 可选值：
+`OPENAI_API_MODE` 仅支持：
 
-- `responses`：OpenAI Responses API，默认模式。
+- `responses`：OpenAI Responses API，默认值。
 - `chat_completions`：OpenAI Chat Completions API。
 
-只读取当前 `LLM_PROVIDER` 对应的一组配置。非法提供方或协议模式会直接报错，不会静默切换。
+项目只读取当前 `LLM_PROVIDER` 对应的配置，不提供旧变量别名，也不会在配置错误时静默切换协议。
 
-## 启动 CLI
+### 3. 启动 CLI
 
 ```bash
 npm run cli
 ```
 
-启动时会先构建 TypeScript，再进入连续对话。默认工作区：
+命令会先构建 TypeScript，再进入连续对话。默认工作区：
 
 - Windows：`~/Documents/humanize-agent-work`
 - Linux / macOS：`~/humanize-agent-work`
 
-### CLI 命令
-
 | 命令 | 作用 |
 | --- | --- |
-| `/help` | 查看实际可用命令 |
+| `/help` | 查看可用命令 |
 | `/cd <路径>` | 切换工作区；无参显示当前工作区 |
 | `/permission [workspace\|approval]` | 无参切换权限，带参精确设置 |
 | `/exit` | 退出 |
 | `Ctrl+C` | 取消当前请求 |
 
-### 权限模式
-
-- `workspace`（默认）：提供读取、编辑、搜索、`mkdir`、移动和删除等专用文件工具，同时注册受限的 `run_command`。例如 `pwd`、`ls`、`cat`、`rg` 和 `git status` 等白名单命令无需审批；白名单外的命令经模型自动审核，判定不危险才执行，危险即拒绝（见下文「命令自动审核」）；所有路径参数都限制在当前工作区内。
-- `approval`：包含 `workspace` 的全部专用文件工具和只读命令能力。同一套只读白名单无需审批；白名单外的命令先经模型自动审核，判定不危险（包括普通写入）直接执行，只有判定危险或审核失败时才需要人工审批，审批前应核对完整命令、工作目录和高风险警告。
-- `open`：任意 shell 命令无需审批直接执行，暂未在 CLI 开放。
-
-`workspace` 的白名单 `run_command` 只接受单命令 argv，不经过 shell；管道、重定向、串接、命令/变量代换、非白名单命令和可写参数都不会走白名单直接执行，而是交给命令自动审核，不会自动转为审批。`find -exec`、`sed -i`、`awk`、分页器、命令包装器及 `wget` 等不在直接放行范围内。敏感路径（如 `.env*`、私钥、凭据、`.git` 和运行时记忆）也会被拒绝。Git 仅开放指定只读子命令并隔离外部配置；Windows 的 `dir`、显示用 `cd`、`type`、`Get-Content`、`Select-String` 由 Node 适配器实现，不调用 `cmd` 或 PowerShell。
-
-`curl` 只对单一 HTTP(S) URL 的 GET/HEAD 放开，支持常用的静默、错误、重定向、header、User-Agent、HTTP(S) proxy 和超时参数；固定禁止其他协议和 URL globbing。上传、写文件、自定义请求方法、本地配置及从文件读取 header 仍不会免审批。该放行允许向外部服务发送 URL 和显式 header，不等于网络隔离。
-
-非空目录只有显式设置 `recursive=true` 才能递归删除；禁止删除工作区根目录、越界操作和覆盖已有移动目标。受限 argv 和路径预检不是 OS 沙箱；`approval/open` 的任意 shell 更不构成文件系统或网络安全边界。
-
-### 命令自动审核
-
-`workspace` 和 `approval` 下白名单外的命令会先由 Agent 当前使用的同一个模型做一次独立审核。审核请求只包含判定规则和命令原文，不带对话历史、记忆和工具，也不写入会话记录，无需额外配置。
-
-判定模型返回 `readonly` 与 `dangerous`，放行只看 `dangerous`：
-
-| 模式 | `dangerous=false` | `dangerous=true` | 审核超时（30 秒）/出错 |
-| --- | --- | --- | --- |
-| `workspace` | 在工作区内以系统 shell 执行 | 拒绝 | 拒绝 |
-| `approval` | 直接执行，无需审批 | 转人工审批（标记高风险） | 转人工审批 |
-
-批量删除、提权、读取或外传敏感信息、读写工作区外路径、全局安装等都会被判为危险。`.env*`、私钥等敏感路径不送审：`workspace` 直接拦截，`approval` 直接转人工审批。自动审核依赖模型判断，不等于沙箱隔离。
-
-## Web UI
-
-首次使用先安装 UI 依赖：
-
-```bash
-npm --prefix src/ui install
-```
-
-构建并启动真实 Agent Web UI：
+### 4. 启动 Web UI
 
 ```bash
 npm run ui
 ```
 
-打开 `http://127.0.0.1:3210`。生产服务器仅监听本机，直接托管 `dist/ui/web/`，API 密钥、工作区文件和 SQLite 均留在 Node 服务端。已接通连续对话、流式文本、真实工具轨迹、人工审批、停止、新对话及 `workspace/approval` 切换；mock、模拟思考、产物预览和历史/工具管理占位已移除。
+打开 `http://127.0.0.1:3210`。服务仅监听本机，API 密钥、工作区文件和 SQLite 均保留在 Node 服务端。
 
-开发模式分别启动后端和 Vite：
+Web UI 已接入：
+
+- 真实流式回复、思考过程、工具调用轨迹和 token 用量。
+- 多行输入、安全 Markdown、任务停止和人工审批。
+- 工作区浏览与切换，以及 `workspace/approval` 权限切换。
+- 推理强度设置；同一次任务的所有工具轮使用相同档位。
+- 新建对话时严格归档当前会话，归档失败不会清空当前页面。
+- 只读历史对话，不支持修改、恢复或写入历史。
+
+开发模式可在两个终端分别运行：
 
 ```bash
-npm run ui:api   # http://127.0.0.1:3210
-npm run ui:dev   # http://127.0.0.1:5173，/api 自动代理到后端
+npm run ui:api   # 后端：http://127.0.0.1:3210
+npm run ui:dev   # 前端：http://127.0.0.1:5173，/api 自动代理
 ```
 
-仅编译产物可执行 `npm run ui:build`，后端输出到 `dist/ui/server/`，前端输出到 `dist/ui/web/`。
+仅构建产物：
 
-## 网页搜索（可选）
+```bash
+npm run ui:build
+```
 
-在 `.env` 中配置 Tavily API Key：
+后端输出到 `dist/ui/server/`，前端输出到 `dist/ui/web/`。
+
+## 记忆与会话
+
+记忆数据默认保存在 `src/data/memory/`，由 SQLite 单库和 `MEMORY.md` 组成，不维护多套存储之间的同步逻辑。
+
+- **核心记忆**：新会话注入稳定、长期有效的用户偏好和重要事实。
+- **短期记忆**：新会话注入近 72 小时已总结会话的标题与摘要索引。
+- **长期记忆**：更早历史不自动注入，由 Agent 按需进行全文检索和时间分页。
+- **会话归档**：Web UI 新建对话时，严格按照“总结成功 → 关闭旧会话 → 创建新会话”执行；总结失败会保留原会话和页面现场。
+- **时间上下文**：每条用户消息发往模型前都会注入当前本地时间、UTC 偏移和时区；SQLite 仍保存用户原文，不写入时间前缀。
+
+工具结果和网页内容按不可信输入处理，不能直接成为核心记忆写入依据。
+
+## 权限与命令审核
+
+### 权限模式
+
+| 模式 | 行为 |
+| --- | --- |
+| `workspace`（默认） | 提供工作区内的专用文件工具和只读命令白名单；白名单外命令经模型审核，不危险才执行，危险或审核失败直接拒绝。 |
+| `approval` | 继承 `workspace` 能力，并允许本机绝对路径的非敏感只读查看；白名单外命令经模型审核，不危险直接执行，危险或审核失败转人工审批。 |
+
+只读白名单使用固定 argv 和路径预检，不经过 shell。管道、重定向、串接、命令代换、可写参数和敏感路径不会借白名单直接执行。专用文件工具禁止越界、删除工作区根目录或覆盖移动目标；非空目录必须显式设置 `recursive=true` 才能递归删除。
+
+### 模型自动审核
+
+白名单外命令会由当前主模型进行一次独立审核。审核请求只包含判定规则和命令原文，不带会话历史、记忆或工具，也不写入对话记录。
+
+| 模式 | `dangerous=false` | `dangerous=true` | 审核超时或失败 |
+| --- | --- | --- | --- |
+| `workspace` | 在工作区内执行 | 拒绝 | 拒绝 |
+| `approval` | 直接执行 | 人工审批并标记高风险 | 人工审批 |
+
+批量删除、提权、敏感信息读取或外传、工作区外写入和全局配置修改等会被视为危险。模型审核、固定 argv 和路径预检都不是 OS 沙箱；执行前仍应核对命令、工作目录与潜在影响。
+
+## 提示词
+
+**Everything can be configured.** 系统提示、每次对话注入和独立任务提示都可以直接修改，无需改动 Agent 主循环。
+
+固定提示词集中在 `src/prompt/`，不再散落在业务代码中：
+
+```text
+src/prompt/
+├── loader.ts
+├── init.md          # 初始化系统提示、权限、工作区、Skill 和记忆包装
+├── session.md       # 每条消息的时间、权限通知和工具轮次注入
+└── task/            # 会话摘要与命令安全审核
+```
+
+`init.md` 和 `session.md` 使用 `## 模板名` 区分区块，动态值通过 `{{variable}}` 注入。工作区路径、记忆正文、用户消息等运行数据仍由代码生成。
+
+初始化提示词集中在一个文件中，可以直接查看和调整 Agent 的默认行为、工具规则、权限说明与记忆包装：
+
+![init.md 中的初始化提示词配置](docs/screenshots/memory.init.png)
+
+每次对话需要注入的内容也集中管理，包括当前时间、权限切换通知和工具轮次限制：
+
+![session.md 中的对话注入配置](docs/screenshots/memory.session.png)
+
+构建时模板会复制到 `dist/prompt/`，生产加载不依赖源目录或当前工作目录。
+
+## 可选工具与扩展
+
+### Tavily 网页搜索
+
+在 `.env` 中配置：
 
 ```dotenv
 TAVILY_API_KEY=tvly-your-api-key
 ```
 
-配置后，CLI 在 `workspace` 和 `approval` 中都会注册 `web_search`；未配置或值为空时不注册，不影响其他功能。工具支持 `query`、`max_results`（默认 5，范围 1–20）、`search_depth`（`basic/advanced/fast/ultra-fast`）和 `include_answer`。请求使用 Bearer 认证和 30 秒超时，只返回标题、链接、摘要及可选 answer，不获取原始网页内容；搜索响应按不可信外部内容处理。
-
-## 内置 Skill 与 MCP
-
-内置资源放在 `src/data/tools/<skill|mcp>/builtin/`，加载器位于 `src/tools/skill/` 和 `src/tools/mcp/`。构建时会将 `SKILL.md` 和 JSON 清单复制到 `dist/data/tools/`。`builtin` 之外的其他同级目录预留给外置资源，外置自动加载尚未接入。
+配置后，CLI 和 Web UI 都会注册 `web_search`；未配置时工具自动隐藏。搜索只返回标题、链接、摘要和可选 answer，不获取原始网页正文，结果按不可信外部内容处理。
 
 ### Skill
 
-每个技能使用独立目录：
+每个内置 Skill 使用独立目录：
 
 ```text
 src/data/tools/skill/builtin/<name>/SKILL.md
 ```
 
-文件包含 `name`、`description` frontmatter 和 Markdown 正文。CLI 只向模型注入技能索引，模型通过 `read_skill` 按需读取完整正文；正文按不可信内容处理。
+文件包含 `name`、`description` frontmatter 和 Markdown 正文。系统只注入技能索引，模型通过 `read_skill` 按需读取完整正文。
 
 ### 本地 stdio MCP
 
-在 `src/data/tools/mcp/builtin/servers.json` 中声明服务器：
+在 `src/data/tools/mcp/builtin/servers.json` 中声明服务器。工具以 `mcp__<server>__<tool>` 注册：
 
-```json
-{
-  "servers": {
-    "demo": {
-      "command": "node",
-      "args": ["./demo/server.js"],
-      "cwd": "./demo",
-      "env": { "TOKEN": "${DEMO_TOKEN}" },
-      "timeoutMs": 30000
-    }
-  }
-}
-```
+- `workspace` 仅加载只读工具。
+- `approval` 加载全部工具，副作用调用按写操作串行执行。
+- 单个服务器加载失败会警告并跳过，不阻断其他工具。
+- 工作区与权限切换复用连接，退出时统一关闭。
 
-相对 `cwd` 基于清单目录解析，密钥通过环境变量引用注入。工具以 `mcp__<server>__<tool>` 注册：
+构建会复制 Skill 和 MCP 资源到 `dist/data/tools/`。远程 HTTP、SSE、OAuth 和动态工具刷新暂未接入。
 
-- `workspace` 仅注册 `readOnlyHint=true` 的只读 MCP 工具。
-- `approval` 注册全部 MCP 工具，副作用调用按写工具串行执行，不额外弹出通用审批。
-- 单服务器加载失败会警告并跳过，不阻断其他工具和对话。
-- `/cd` 和权限切换复用现有连接，退出 CLI 时统一关闭。
-
-首版不支持远程 HTTP、SSE、OAuth、自动重连和动态工具刷新。
-
-## 开发命令
+## 开发
 
 ```bash
-npm test           # 运行测试
+npm test           # 全量测试
 npm run typecheck  # TypeScript 类型检查
-npm run build      # 构建到 dist/
+npm run build      # 构建后端并复制提示词、Skill 和 MCP 资源
+npm run cli        # 启动 CLI 连续对话
+npm run ui         # 启动 Web UI
 ```
 
 ## 文档
 
-- [项目概览](docs/overview.md)
+- [项目概览与当前实现状态](docs/overview.md)
 - [项目协作规则](AGENTS.md)
 - [记忆设计](src/memory/DESIGN.md)
 - [工具调用设计](src/tools/tool_calling/DESIGN.md)
+- [工作区管理](src/tools/tool_calling/workspace_manager.md)

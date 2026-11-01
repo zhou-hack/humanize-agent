@@ -1,12 +1,12 @@
 # 项目概览
 
-> 最后更新：2026-10-30
+> 最后更新：2026-11-01
 
 ## 定位
 
 humanize-agent 是一个专注长期记忆的 Agent。核心目标不是堆砌工具数量，而是让 Agent 在持续交互中记住有价值的信息，并在之后的对话里自然地用上。
 
-记忆、工具调用、LLM 适配和 Agent 主循环已完成，并已提供最小交互 CLI。可以通过 `npm run cli` 进行连续对话，验证工作区工具与长期记忆。
+记忆、工具调用、LLM 适配和 Agent 主循环已完成，并已提供交互 CLI 与真实 Web UI。可分别通过 `npm run cli`、`npm run ui` 使用；安装、模型配置、权限、记忆和扩展资源的完整入口说明见根目录 `README.md`。
 
 ## 技术栈
 
@@ -59,9 +59,9 @@ src/
 │   ├── tools.ts            #   8 个原生记忆工具
 │   └── index.ts            #   MemoryService 统一入口
 ├── prompt/                 # Markdown 提示词资源与同步模板加载器
-│   ├── loader.ts           #   固定名称加载、缓存与 {{variable}} 替换
-│   ├── init/               #   Agent/会话初始化系统提示与记忆包装
-│   ├── session/            #   用户输入时间、权限通知与运行轮次注入
+│   ├── loader.ts           #   固定名称加载、缓存、标题区块提取与变量替换
+│   ├── init.md             #   全部 Agent/会话初始化提示，按二级标题分区块
+│   ├── session.md          #   全部对话注入，按二级标题分区块
 │   └── task/               #   会话摘要与命令审核独立任务提示
 ├── sandbox/                # OS 沙箱，暂缓
 └── data/                   # 运行时数据与工具资源
@@ -80,7 +80,7 @@ src/
 | 工具调用 `tool_calling` | 已完成 | 注册校验调度、10 个文件工具、三档权限命令工具、Tavily `web_search`、工作区管理 |
 | LLM 适配 `llm` | 已完成 | Anthropic、OpenAI Responses、OpenAI Chat Completions，统一协议与五档 effort 映射 |
 | Agent 主循环 `agent` | 已完成 | 串联记忆、LLM 与工具，支持 8 轮工具、取消、恢复和上下文预算 |
-| 提示词资源 `prompt` | 已完成 | 初始化、每轮注入与独立任务提示统一使用 Markdown，构建同步到 `dist/prompt` |
+| 提示词资源 `prompt` | 已完成 | 初始化与对话注入分别集中于 `init.md`、`session.md`，独立任务使用 `task/`，构建同步到 `dist/prompt` |
 | CLI 对话入口 `cli` | 已完成 | 连续对话、流式输出、`/cd` 工作区切换、两档权限与命令审批 |
 | Web UI `ui` | 已完成 | Vue 3 + 本机 Node 服务，真实 Agent SSE、工具轨迹、审批、停止、严格归档新对话、只读历史、权限与工作区切换、安全 Markdown，生产静态托管 |
 | 沙箱 `sandbox` | 暂缓 | 强隔离延后，当前命令权限不构成安全边界 |
@@ -147,9 +147,10 @@ src/
 ### 提示词资源
 
 - 固定系统提示与注入包装统一放在 `src/prompt/**/*.md`，动态工作区路径、权限模式、Skill 索引、记忆正文、用户消息和待审命令仍由代码生成，不将运行时数据写回模板。
-- `init/` 保存 Agent/会话初始化内容：默认系统提示、四种权限上下文、工作区状态、工具调用规则、Skill 索引及核心/最近记忆包装；`session/` 保存每条用户输入的时间前缀、一次性权限通知和最终工具轮限制；`task/` 保存会话摘要与命令安全审核的独立任务提示。
-- `renderPrompt` 按固定名称同步读取并缓存模板，仅支持 `{{variable}}` 单次替换，缺少变量立即报错，不引入条件、循环或异步模板引擎。CLI/WebUI、Agent、Skill、最近记忆、摘要和命令审核均通过同一入口加载，原有 system 拼接顺序、消息角色、权限通知入库及时间前缀不入库语义保持不变。
-- 后端构建除内置 Skill/MCP 资源外，还将全部 15 份提示 Markdown 镜像复制到 `dist/prompt/`；加载器基于 `import.meta.url` 定位资源，生产运行不依赖 `src` 或当前工作目录。
+- `init.md` 集中保存 Agent/会话初始化内容：默认系统提示、四种权限上下文、工作区状态、工具调用规则、Skill 索引及核心/最近记忆包装；`session.md` 集中保存每条用户输入的时间前缀、一次性权限通知和最终工具轮限制。两个文件均通过 `## 模板名` 二级标题划分区块；`task/` 保存会话摘要与命令安全审核的独立任务提示。
+- `renderPrompt` 按固定名称同步读取并缓存源文件和模板，合并文件只提取目标标题下的内容，仅支持 `{{variable}}` 单次替换，缺少变量立即报错，不引入条件、循环或异步模板引擎。CLI/WebUI、Agent、Skill、最近记忆、摘要和命令审核均通过同一入口加载，原有 system 拼接顺序、消息角色、权限通知入库及时间前缀不入库语义保持不变。
+- 后端构建除内置 Skill/MCP 资源外，还将 4 份 Markdown（共 15 个命名模板）复制到 `dist/prompt/`，复制前清理旧的 `init/`、`session/` 分散目录以避免已删除文件残留，同时保留编译后的加载器；加载器基于 `import.meta.url` 定位资源，生产运行不依赖 `src` 或当前工作目录。
+- README 的提示词章节以 **Everything can be configured** 强调可直接调整初始化与对话注入，并嵌入 `docs/screenshots/memory.init.png`、`docs/screenshots/memory.session.png` 两张实际配置截图。
 
 ### Web UI
 
@@ -163,7 +164,7 @@ src/
 
 ## 已验证能力
 
-本轮全量自动化验证：28 个测试文件共 399 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建通过。新增覆盖 15 份 Markdown 模板加载、变量完整替换、缺变量报错和美元符号安全替换；生产构建后已从项目目录之外直接加载 `dist/prompt/loader.js` 并成功渲染时间模板，确认资源不依赖 `src` 或 cwd；本机 3210 UI 服务已在空闲状态重启，`GET /api/state` 返回正常且 `running=false`。此前覆盖每条用户消息的时间上下文、连续输入重新取值及持久化原文不受污染，以及三种协议五档 effort、Agent 多工具轮档位一致、Web 档位校验、思考增量、命令审核、严格归档、只读历史、外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
+本轮全量自动化验证：28 个测试文件共 400 项通过、2 项平台相关测试跳过，TypeScript 类型检查与后端生产构建通过。提示词测试覆盖 4 份 Markdown 中的 15 个命名模板、合并区块边界、变量完整替换、缺变量报错和美元符号安全替换；生产构建后已从项目目录之外直接加载 `dist/prompt/loader.js` 并成功渲染时间模板，确认资源不依赖 `src` 或 cwd；本机 3210 UI 服务已使用合并后的资源启动，`GET /api/state` 返回正常且 `running=false`。此前覆盖每条用户消息的时间上下文、连续输入重新取值及持久化原文不受污染，以及三种协议五档 effort、Agent 多工具轮档位一致、Web 档位校验、思考增量、命令审核、严格归档、只读历史、外部只读、Markdown 和工作区切换。Tavily 已完成 mock 接口验证；真实 API 调用因本地尚未配置 `TAVILY_API_KEY` 而跳过。
 
 真实 API（非 mock）已验证：
 

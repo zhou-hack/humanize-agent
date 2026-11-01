@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir } from 'node:fs/promises'
+import { cp, lstat, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -19,6 +19,8 @@ await cp(source, destination, {
 
 const promptSource = path.join(projectRoot, 'src', 'prompt')
 const promptDestination = path.join(projectRoot, 'dist', 'prompt')
+await rm(path.join(promptDestination, 'init'), { recursive: true, force: true })
+await rm(path.join(promptDestination, 'session'), { recursive: true, force: true })
 await mkdir(promptDestination, { recursive: true })
 await cp(promptSource, promptDestination, {
   recursive: true,
