@@ -221,6 +221,7 @@ TAVILY_API_KEY=                  # 可选；配置后注册 web_search
 - 项目协作与 Git 身份规则：[AGENTS.md](../AGENTS.md)
 - MiniMax-M3.1-Flash 思考强度实测（不可关闭思考，可选 low–max，默认接近 high）：[effort.md](../effort.md)
 - 记忆设计：[src/memory/DESIGN.md](../src/memory/DESIGN.md)
+- 记忆效果验证与后续决策：[memory-validation.md](memory-validation.md)
 - 工具调用设计：[src/tools/tool_calling/DESIGN.md](../src/tools/tool_calling/DESIGN.md)
 - 工作区管理：[src/tools/tool_calling/workspace_manager.md](../src/tools/tool_calling/workspace_manager.md)
 - OpenAI 适配器：[src/llm/openai/README.md](../src/llm/openai/README.md)
