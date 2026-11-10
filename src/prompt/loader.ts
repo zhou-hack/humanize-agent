@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs'
 
 const PROMPT_FILES = {
   'init/default-system': 'init.md#default-system',
+  'init/event-curation': 'init.md#event-curation',
   'init/skills': 'init.md#skills',
   'init/tool-guide': 'init.md#tool-guide',
+  'init/knowledge': 'init.md#knowledge',
   'init/workspace': 'init.md#workspace',
   'init/permission-workspace': 'init.md#permission-workspace',
   'init/permission-workspace-judge': 'init.md#permission-workspace-judge',

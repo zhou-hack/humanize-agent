@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { loadEnvFile } from 'node:process'
 import { createAnthropicClient, createOpenAIClient } from '../llm/index.js'
 import type { LlmClient } from '../llm/types.js'
+import { KnowledgeService } from '../knowledge/index.js'
 import { MemoryService } from '../memory/index.js'
 import { createLlmCommandJudge } from '../tools/tool_calling/index.js'
 import { runRepl } from './repl.js'
@@ -12,6 +13,7 @@ import { renderPrompt } from '../prompt/loader.js'
 
 async function main(): Promise<void> {
   let memory: MemoryService | undefined
+  let knowledge: KnowledgeService | undefined
 
   try {
     const envPath = resolve('.env')
@@ -34,10 +36,13 @@ async function main(): Promise<void> {
       }
     })
     const memoryService = memory
+    knowledge = new KnowledgeService()
+    const knowledgeService = knowledge
     const commandJudge = createLlmCommandJudge({ llm })
     await runRepl({
       createSession: (requestApproval) => createCliSession({
         memory: memoryService,
+        knowledge: knowledgeService,
         llm,
         requestApproval,
         commandJudge,
@@ -55,6 +60,14 @@ async function main(): Promise<void> {
     printError('启动或运行失败', error)
     process.exitCode = 1
   } finally {
+    if (knowledge) {
+      try {
+        await knowledge.close()
+      } catch (error) {
+        printError('关闭知识库失败', error)
+        process.exitCode = 1
+      }
+    }
     if (memory) {
       try {
         await memory.close()

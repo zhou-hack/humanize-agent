@@ -1,7 +1,7 @@
 import { lstat, open, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { ToolError } from '../errors.js'
-import type { Workspace } from '../file_tools/workspace.js'
+import { resolveWorkspaceDestination, type Workspace } from '../file_tools/workspace.js'
 import { lexReadonlyCommand } from './readonly_lexer.js'
 import { assertNonSensitivePath, resolveReadonlyPath } from './readonly_paths.js'
 import { resolveWindowsNodeAdapter } from './readonly_windows.js'
@@ -242,7 +242,7 @@ async function validateNativeCommand(
       }, context, { kind: 'file', minimum: 2, maximum: 2 })
       return args
     case 'curl':
-      return validateCurl(args)
+      return validateCurl(args, context)
     case 'jq':
       await validateJq(args, context)
       return args
@@ -412,17 +412,29 @@ async function validateCut(args: readonly string[], context: Context): Promise<v
   if (selectors.length !== 1) throw forbidden('cut 必須且只能選擇 -f、-c 或 -b')
 }
 
-function validateCurl(args: readonly string[]): readonly string[] {
+async function validateCurl(args: readonly string[], context: Context): Promise<readonly string[]> {
   const parsed = parseArguments(args, {
     '-s': {}, '--silent': {}, '-S': {}, '--show-error': {},
     '-f': {}, '--fail': {}, '-i': {}, '--include': {},
     '-I': {}, '--head': {}, '-L': {}, '--location': {},
     '-4': {}, '--ipv4': {}, '-6': {}, '--ipv6': {}, '--compressed': {},
+    '--http1.1': {}, '--http2': {}, '-G': {}, '--get': {},
+    '-X': { value: 'string' }, '--request': { value: 'string' },
+    '-d': { value: 'string' }, '--data': { value: 'string' },
+    '--data-ascii': { value: 'string' }, '--data-binary': { value: 'string' },
+    '--data-raw': { value: 'string' }, '--data-urlencode': { value: 'string' },
+    '--json': { value: 'string' },
+    '-F': { value: 'string' }, '--form': { value: 'string' },
+    '--form-string': { value: 'string' },
+    '-T': { value: 'string' }, '--upload-file': { value: 'string' },
+    '-o': { value: 'string' }, '--output': { value: 'string' },
     '-H': { value: 'string' }, '--header': { value: 'string' },
     '-A': { value: 'string' }, '--user-agent': { value: 'string' },
+    '-u': { value: 'string' }, '--user': { value: 'string' },
     '-x': { value: 'string' }, '--proxy': { value: 'string' },
     '--max-time': { value: 'integer' }, '--connect-timeout': { value: 'integer' },
-    '--max-redirs': { value: 'integer' }
+    '--max-redirs': { value: 'integer' }, '--retry': { value: 'integer' },
+    '--retry-delay': { value: 'integer' }, '--retry-max-time': { value: 'integer' }
   }, true)
   const operands = allOperands(parsed)
   if (operands.length !== 1) throw forbidden('curl 必須且只能指定一個 HTTP(S) URL')
@@ -436,6 +448,41 @@ function validateCurl(args: readonly string[]): readonly string[] {
   for (const flag of ['-x', '--proxy']) {
     const proxy = parsed.options.get(flag)
     if (typeof proxy === 'string') assertHttpUrl(proxy, 'curl proxy')
+  }
+  for (const flag of ['-X', '--request']) {
+    const method = parsed.options.get(flag)
+    if (typeof method === 'string' && !/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(method)) {
+      throw forbidden('curl HTTP 方法格式無效')
+    }
+  }
+  for (const flag of ['-d', '--data', '--data-ascii', '--data-binary', '--data-raw', '--json']) {
+    const value = parsed.options.get(flag)
+    if (typeof value === 'string' && value.startsWith('@')) {
+      await preflightPath(value.slice(1), 'file', false, context)
+    }
+  }
+  const urlEncoded = parsed.options.get('--data-urlencode')
+  if (typeof urlEncoded === 'string' && urlEncoded.includes('@')) {
+    await preflightPath(urlEncoded.slice(urlEncoded.indexOf('@') + 1), 'file', false, context)
+  }
+  for (const flag of ['-F', '--form']) {
+    const value = parsed.options.get(flag)
+    if (typeof value !== 'string') continue
+    const payload = value.slice(value.indexOf('=') + 1)
+    if (payload.startsWith('@') || payload.startsWith('<')) {
+      await preflightPath(payload.slice(1).split(';')[0] as string, 'file', false, context)
+    }
+  }
+  for (const flag of ['-T', '--upload-file']) {
+    const value = parsed.options.get(flag)
+    if (typeof value === 'string') await preflightPath(value, 'file', false, context)
+  }
+  for (const flag of ['-o', '--output']) {
+    const value = parsed.options.get(flag)
+    if (typeof value === 'string' && value !== '-') {
+      assertNonSensitivePath(value)
+      await resolveWorkspaceDestination(context.workspace, value)
+    }
   }
 
   return [

@@ -1,6 +1,12 @@
 import { CoreMemory } from './core.js'
 import { formatRecentConversationIndex, getRecentConversations } from './recent.js'
-import { MemoryStore, type AppendMessageInput, type Conversation, type StoredMessage } from './store.js'
+import {
+  DEFAULT_MEMORY_SCOPE,
+  MemoryStore,
+  type AppendMessageInput,
+  type Conversation,
+  type StoredMessage
+} from './store.js'
 import {
   MemorySummaryScheduler,
   type ConversationSummarizer,
@@ -28,7 +34,7 @@ export class MemoryService {
   readonly core: CoreMemory
   readonly summaries: MemorySummaryScheduler
   private readonly now: () => number
-  private currentId: string | null = null
+  private readonly currentIds = new Map<string, string>()
   private initialized = false
   private sessionQueue: Promise<void> = Promise.resolve()
 
@@ -44,46 +50,49 @@ export class MemoryService {
   }
 
   get currentConversationId(): string | null {
-    return this.currentId
+    return this.currentIds.get(DEFAULT_MEMORY_SCOPE) ?? null
   }
 
-  async initialize(): Promise<void> {
+  async initialize(scope = DEFAULT_MEMORY_SCOPE): Promise<void> {
     return this.serializeSession(async () => {
-      if (this.initialized) return
-      await this.core.initialize()
-      await this.summaries.recover()
-      const active = this.store.getLatestActiveConversation()
-      if (active && this.now() - active.createdAt < CONVERSATION_LIFETIME_MS) {
-        this.currentId = active.id
+      if (!this.initialized) {
+        await this.core.initialize()
+        await this.summaries.recover()
+        this.initialized = true
       }
-      this.initialized = true
+      const active = this.store.getLatestActiveConversation(scope)
+      if (active && this.now() - active.createdAt < CONVERSATION_LIFETIME_MS) {
+        this.currentIds.set(scope, active.id)
+      }
     })
   }
 
-  async startConversation(): Promise<Conversation> {
-    return this.serializeSession(() => this.startConversationInternal())
+  async startConversation(scope = DEFAULT_MEMORY_SCOPE): Promise<Conversation> {
+    return this.serializeSession(() => this.startConversationInternal(scope))
   }
 
-  async startNewConversation(): Promise<Conversation> {
-    await this.initialize()
+  async startNewConversation(scope = DEFAULT_MEMORY_SCOPE): Promise<Conversation> {
+    await this.initialize(scope)
     return this.serializeSession(async () => {
-      const active = this.currentId
-        ? this.store.findConversation(this.currentId)
-        : this.store.getLatestActiveConversation()
+      const currentId = this.currentIds.get(scope)
+      const active = currentId
+        ? this.store.findConversation(currentId)
+        : this.store.getLatestActiveConversation(scope)
       if (active?.status === 'active') {
         await this.summaries.closeConversation(active.id, true)
       }
-      const conversation = this.store.createConversation(this.now())
-      this.currentId = conversation.id
+      const conversation = this.store.createConversation(this.now(), undefined, scope)
+      this.currentIds.set(scope, conversation.id)
       return conversation
     })
   }
 
   async recordMessage(
-    input: Omit<AppendMessageInput, 'conversationId' | 'createdAt'> & { createdAt?: number }
+    input: Omit<AppendMessageInput, 'conversationId' | 'createdAt'> & { createdAt?: number },
+    scope = DEFAULT_MEMORY_SCOPE
   ): Promise<{ conversation: Conversation; message: StoredMessage }> {
     return this.serializeSession(async () => {
-      const conversation = await this.startConversationInternal()
+      const conversation = await this.startConversationInternal(scope)
       const message = this.store.appendMessage({
         ...input,
         conversationId: conversation.id,
@@ -94,12 +103,16 @@ export class MemoryService {
     })
   }
 
-  async getInitializationContext(conversationId?: string): Promise<MemoryInitializationContext> {
+  async getInitializationContext(
+    conversationId?: string,
+    scope = DEFAULT_MEMORY_SCOPE
+  ): Promise<MemoryInitializationContext> {
     const [core, recent] = await Promise.all([
       this.core.read(),
       Promise.resolve(getRecentConversations(this.store, {
         now: this.now(),
-        currentConversationId: conversationId ?? this.currentId ?? undefined
+        currentConversationId: conversationId ?? this.currentIds.get(scope),
+        scope
       }))
     ])
     return {
@@ -116,25 +129,26 @@ export class MemoryService {
     }
   }
 
-  private async startConversationInternal(): Promise<Conversation> {
+  private async startConversationInternal(scope: string): Promise<Conversation> {
     if (!this.initialized) {
       await this.core.initialize()
       await this.summaries.recover()
       this.initialized = true
     }
 
-    const current = this.currentId ? this.store.findConversation(this.currentId) : null
-    const active = current?.status === 'active' ? current : this.store.getLatestActiveConversation()
+    const currentId = this.currentIds.get(scope)
+    const current = currentId ? this.store.findConversation(currentId) : null
+    const active = current?.status === 'active' ? current : this.store.getLatestActiveConversation(scope)
     if (active) {
       if (this.now() - active.createdAt < CONVERSATION_LIFETIME_MS) {
-        this.currentId = active.id
+        this.currentIds.set(scope, active.id)
         return active
       }
       await this.summaries.closeConversation(active.id)
     }
 
-    const conversation = this.store.createConversation(this.now())
-    this.currentId = conversation.id
+    const conversation = this.store.createConversation(this.now(), undefined, scope)
+    this.currentIds.set(scope, conversation.id)
     return conversation
   }
 

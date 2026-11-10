@@ -9,12 +9,12 @@ const props = defineProps({
 const emit = defineEmits(['update:effort'])
 
 const LEVELS = [
-  { id: 'low', label: '低' },
-  { id: 'medium', label: '中' },
-  { id: 'high', label: '高' },
-  { id: 'xhigh', label: '极高' },
-  { id: 'max', label: 'Max', fx: 'max' },
-  { id: 'ultra', label: 'Ultra', fx: 'ultra' }
+  { id: 'low', label: '低', description: '快速响应，适合日常问答与简单任务。' },
+  { id: 'medium', label: '中', description: '兼顾速度与思考，适合大多数校园事务。' },
+  { id: 'high', label: '高', description: '深入分析任务细节，给出更周全的方案。' },
+  { id: 'xhigh', label: '极高', description: '投入更多推理，处理复杂规划与多步任务。' },
+  { id: 'max', label: 'Max', fx: 'max', description: '充分推演与检查，适合高难度复杂问题。' },
+  { id: 'ultra', label: 'Ultra', fx: 'ultra', description: '最高推理强度，为关键任务提供深度思考；请求按 Max 发送。' }
 ]
 const THEMES = {
   normal: { c1: '#1f78ff', c2: '#2b86ff', c3: '#3a94ff', accent: '#3d9bff' },
@@ -165,9 +165,13 @@ function onDocumentKeyDown(event) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/></svg>
       </button>
       <div class="effort-head">
-        <div class="effort-level">{{ currentLevel.label }}</div>
-        <div v-if="modelName" class="effort-model">{{ modelName }}</div>
+        <span class="effort-eyebrow">REASONING LEVEL</span>
+        <div class="effort-title">
+          推理强度
+          <span class="effort-level" :key="currentLevel.id">{{ currentLevel.label }}</span>
+        </div>
       </div>
+      <p class="effort-desc" :key="currentLevel.id">{{ currentLevel.description }}</p>
       <div
         ref="sliderEl"
         class="effort-slider"
@@ -202,6 +206,20 @@ function onDocumentKeyDown(event) {
         </div>
         <div class="effort-thumb"></div>
       </div>
+      <div class="effort-scale" aria-label="选择推理强度">
+        <button
+          v-for="(level, index) in LEVELS"
+          :key="level.id"
+          type="button"
+          :class="{ active: index === currentIndex }"
+          :aria-pressed="index === currentIndex"
+          :disabled="disabled"
+          @click="setPosition(index / LAST, true)">{{ level.label }}</button>
+      </div>
+      <div class="effort-foot">
+        <span>强度越高，思考越充分</span>
+        <span v-if="modelName" class="effort-model" :title="modelName">{{ modelName }}</span>
+      </div>
     </div>
 
     <button
@@ -211,7 +229,7 @@ function onDocumentKeyDown(event) {
       :aria-expanded="open"
       :disabled="disabled"
       @click.stop="setOpen(!open)">
-      推理强度 <span class="effort-pill-level">{{ currentLevel.label }}</span>
+      推理强度 <span class="effort-pill-level" :key="currentLevel.id">{{ currentLevel.label }}</span>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg>
     </button>
   </div>

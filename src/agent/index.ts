@@ -10,21 +10,21 @@ import type {
 } from '../llm/types.js'
 import type { MemoryService } from '../memory/index.js'
 import { renderPrompt } from '../prompt/loader.js'
-import type { StoredMessage } from '../memory/store.js'
+import { DEFAULT_MEMORY_SCOPE, type StoredMessage } from '../memory/store.js'
 import type { ToolExecutor } from '../tools/tool_calling/executor.js'
 import type { ToolRegistry } from '../tools/tool_calling/registry.js'
 import type { ToolCall, ToolContext, ToolResult } from '../tools/tool_calling/types.js'
 
 export const DEFAULT_AGENT_TIMEOUT_MS = 120_000
 export const DEFAULT_MAX_CONTEXT_CHARS = 100_000
-export const MAX_TOOL_ROUNDS = 8
+export const TOOL_ROUND_SOFT_LIMIT = 8
 
 const OLD_TOOL_RESULT_CHARS = 1000
 const MIN_CONTENT_CHARS = 64
 const TOOL_RESULT_TRUNCATION_MARK = '…[旧工具结果已截断]'
 const TEXT_TRUNCATION_MARK = '…[内容已截断]'
 
-export type AgentErrorCode = 'aborted' | 'timeout' | 'tool_round_limit'
+export type AgentErrorCode = 'aborted' | 'timeout'
 
 export class AgentError extends Error {
   constructor(
@@ -50,10 +50,13 @@ export interface AgentOptions {
   system?: string
   timeoutMs?: number
   maxContextChars?: number
+  memoryScope?: string
 }
 
 export interface AgentRunOptions {
   text: string
+  /** 仅注入本轮模型上下文，不写入长期记忆，也不会延续到下一轮。 */
+  context?: string
   imageIds?: string[]
   effort?: LlmEffort
   signal?: AbortSignal
@@ -78,6 +81,7 @@ interface StoredToolResult {
 export class Agent {
   private readonly timeoutMs: number
   private readonly maxContextChars: number
+  private readonly memoryScope: string
   private conversationId: string | null = null
   private messages: LlmMessage[] = []
   private system: string | undefined
@@ -86,6 +90,7 @@ export class Agent {
   constructor(private readonly options: AgentOptions) {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS
     this.maxContextChars = options.maxContextChars ?? DEFAULT_MAX_CONTEXT_CHARS
+    this.memoryScope = options.memoryScope ?? DEFAULT_MEMORY_SCOPE
     if (!Number.isInteger(this.maxContextChars) || this.maxContextChars < 1000) {
       throw new TypeError('maxContextChars 必须是不小于 1000 的整数')
     }
@@ -138,11 +143,12 @@ export class Agent {
 
     let pendingToolUses: LlmToolUseBlock[] = []
     let completedToolResults: LlmToolResultBlock[] = []
+    let currentUserMessage: LlmMessage | undefined
 
     try {
       throwIfAborted(signal)
-      await this.options.memory.initialize()
-      const conversation = await this.options.memory.startConversation()
+      await this.options.memory.initialize(this.memoryScope)
+      const conversation = await this.options.memory.startConversation(this.memoryScope)
       throwIfAborted(signal)
       await this.prepareConversation(conversation.id)
 
@@ -154,23 +160,30 @@ export class Agent {
         onApprovalEnd
       }
 
-      await this.options.memory.recordMessage({ role: 'user', content: runOptions.text })
-      this.messages.push({ role: 'user', content: withCurrentTime(runOptions.text) })
+      await this.options.memory.recordMessage({ role: 'user', content: runOptions.text }, this.memoryScope)
+      const runContext = runOptions.context?.trim()
+      currentUserMessage = {
+        role: 'user',
+        content: runContext
+          ? `${runContext}\n\n${withCurrentTime(runOptions.text)}`
+          : withCurrentTime(runOptions.text)
+      }
+      this.messages.push(currentUserMessage)
 
       let toolRounds = 0
       while (true) {
         throwIfAborted(signal)
-        const finalizing = toolRounds >= MAX_TOOL_ROUNDS
+        const beyondSoftLimit = toolRounds >= TOOL_ROUND_SOFT_LIMIT
         const request: LlmRequest = {
           messages: limitContextMessages(this.messages, this.maxContextChars),
-          system: finalizing ? withToolRoundLimit(this.system) : this.system,
-          tools: finalizing ? undefined : this.options.registry.list(),
+          system: beyondSoftLimit ? withToolRoundSoftReminder(this.system) : this.system,
+          tools: this.options.registry.list(),
           ...(runOptions.effort !== undefined ? { effort: runOptions.effort } : {}),
           signal
         }
         const response = await this.callLlm(request, runOptions.onEvent, signal)
 
-        await this.options.memory.recordMessage({ role: 'assistant', content: response.content })
+        await this.options.memory.recordMessage({ role: 'assistant', content: response.content }, this.memoryScope)
         this.messages.push({ role: 'assistant', content: response.content })
 
         const toolUses = response.content.filter(
@@ -187,10 +200,6 @@ export class Agent {
             truncated: isTruncatedResponse(response)
           }
         }
-        if (finalizing) {
-          throw new AgentError('tool_round_limit', '模型在工具轮数上限后仍请求调用工具')
-        }
-
         toolRounds += 1
         const calls = toolUses.map((block): ToolCall => ({
           id: block.id,
@@ -221,7 +230,10 @@ export class Agent {
 
           const content = JSON.stringify(result)
           const stored: StoredToolResult = { toolUseId: call.id, name: call.name, result }
-          await this.options.memory.recordMessage({ role: 'tool', content: stored, text: content })
+          await this.options.memory.recordMessage(
+            { role: 'tool', content: stored, text: content },
+            this.memoryScope
+          )
           pendingToolUses = pendingToolUses.filter((block) => block.id !== call.id)
           completedToolResults.push({
             type: 'tool_result',
@@ -244,6 +256,7 @@ export class Agent {
       }
       throw error
     } finally {
+      if (currentUserMessage) currentUserMessage.content = withCurrentTime(runOptions.text)
       clearTimeout(timer)
       runOptions.signal?.removeEventListener('abort', onExternalAbort)
     }
@@ -262,7 +275,10 @@ export class Agent {
       const result = interruptedToolResult(kind)
       const content = JSON.stringify(result)
       const stored: StoredToolResult = { toolUseId: toolUse.id, name: toolUse.name, result }
-      await this.options.memory.recordMessage({ role: 'tool', content: stored, text: content })
+      await this.options.memory.recordMessage(
+        { role: 'tool', content: stored, text: content },
+        this.memoryScope
+      )
       missingBlocks.push({
         type: 'tool_result',
         toolUseId: toolUse.id,
@@ -281,7 +297,7 @@ export class Agent {
     if (this.conversationId === conversationId) return
 
     const storedMessages = this.options.memory.store.listMessages(conversationId)
-    const context = await this.options.memory.getInitializationContext(conversationId)
+    const context = await this.options.memory.getInitializationContext(conversationId, this.memoryScope)
     this.messages = restoreMessages(storedMessages)
     this.system = composeSystem(this.options.system, context.core, context.recent)
     this.conversationId = conversationId
@@ -303,10 +319,9 @@ export class Agent {
   }
 }
 
-type InterruptionKind = 'cancelled' | 'timeout' | 'limit' | 'unknown'
+type InterruptionKind = 'cancelled' | 'timeout' | 'unknown'
 
 function interruptionKind(error: unknown, signal: AbortSignal): InterruptionKind {
-  if (error instanceof AgentError && error.code === 'tool_round_limit') return 'limit'
   if (signal.aborted) {
     return abortError(signal).code === 'timeout' ? 'timeout' : 'cancelled'
   }
@@ -326,16 +341,6 @@ function interruptedToolResultBlock(
 }
 
 function interruptedToolResult(kind: InterruptionKind): ToolResult {
-  if (kind === 'limit') {
-    return {
-      ok: false,
-      error: {
-        code: 'limit_exceeded',
-        message: '工具轮数已达上限，本次调用未执行',
-        retryable: true
-      }
-    }
-  }
   if (kind === 'timeout') {
     return {
       ok: false,
@@ -376,6 +381,9 @@ function restoreMessages(storedMessages: StoredMessage[]): LlmMessage[] {
   for (const message of storedMessages) {
     if (message.role === 'tool') {
       const stored = message.content as StoredToolResult
+      const matchesPendingToolUse = pendingToolUses.some((block) => block.id === stored.toolUseId)
+      const duplicateToolResult = toolResults.some((block) => block.toolUseId === stored.toolUseId)
+      if (!matchesPendingToolUse || duplicateToolResult) continue
       toolResults.push({
         type: 'tool_result',
         toolUseId: stored.toolUseId,
@@ -540,7 +548,7 @@ function composeSystem(base: string | undefined, core: string, recent: string): 
   return sections.length > 0 ? sections.join('\n\n') : undefined
 }
 
-function withToolRoundLimit(system: string | undefined): string {
+function withToolRoundSoftReminder(system: string | undefined): string {
   const instruction = renderPrompt('session/tool-round-limit')
   return system ? `${system}\n\n${instruction}` : instruction
 }

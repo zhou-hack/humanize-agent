@@ -42,7 +42,8 @@ async function load(path) {
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
+    <Transition name="modal">
+      <div v-if="open" class="modal-backdrop" @click.self="emit('close')">
       <section class="workspace-dialog" role="dialog" aria-modal="true" aria-label="选择工作区">
         <header class="dialog-head">
           <h2>选择工作区</h2>
@@ -81,6 +82,7 @@ async function load(path) {
           <button class="primary" :disabled="!currentPath || loading" @click="emit('select', currentPath)">选择此文件夹</button>
         </footer>
       </section>
-    </div>
+      </div>
+    </Transition>
   </Teleport>
 </template>

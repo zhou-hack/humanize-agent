@@ -1,4 +1,4 @@
-import { ref, watch } from 'vue'
+import { reactive, ref, watch } from 'vue'
 import { getState, postJson, streamAgentRun } from '../api'
 
 let seq = 0
@@ -15,7 +15,7 @@ function readStoredEffort() {
   }
 }
 
-export function useAgentRun() {
+export function useAgentRun(uiMode = 'chat') {
   const msgs = ref([])
   const steps = ref([])
   const tokens = ref(0)
@@ -118,8 +118,10 @@ export function useAgentRun() {
     }
   }
 
-  async function initialize() {
-    applyState(await getState())
+  async function initialize(initialState) {
+    const state = initialState ?? await getState(uiMode)
+    applySharedState(state)
+    running.value = Boolean(state.running)
     status.value = running.value ? '执行中' : '待命'
   }
 
@@ -127,27 +129,37 @@ export function useAgentRun() {
     if (running.value || modeBusy.value || next === mode.value) return
     modeBusy.value = true
     try {
-      applyState(await postJson('/api/permission', { mode: next }))
+      applySharedState(await postJson('/api/permission', { mode: next }))
     } finally {
       modeBusy.value = false
     }
   }
 
   async function run(text) {
-    if (!text?.trim() || running.value || newChatBusy.value) return
+    const input = text?.trim()
+    if (!input || running.value || newChatBusy.value) return
+    if (input === '/new') {
+      try {
+        if (await newChat()) msgs.value.push({ id: uid(), kind: 'system', text: '已开始新对话。' })
+      } catch (error) {
+        msgs.value.push({ id: uid(), kind: 'system', text: `新建对话失败：${error.message}` })
+      }
+      return
+    }
     const runEffort = effort.value === 'ultra' ? 'max' : effort.value
     steps.value = []
     streamingEl = null
     thinkingEl = null
     running.value = true
     status.value = '执行中'
-    msgs.value.push({ id: uid(), kind: 'user', text: text.trim() })
+    msgs.value.push({ id: uid(), kind: 'user', text: input })
     activeController = new AbortController()
 
     try {
-      await streamAgentRun(text.trim(), {
+      await streamAgentRun(input, {
         signal: activeController.signal,
         effort: runEffort,
+        mode: uiMode,
         onEvent: dispatch
       })
       if (running.value) finishRun('done')
@@ -166,7 +178,7 @@ export function useAgentRun() {
     if (!running.value) return
     status.value = '正在中止'
     try {
-      await postJson('/api/runs/stop')
+      await postJson('/api/runs/stop', { mode: uiMode })
     } finally {
       activeController?.abort()
     }
@@ -177,7 +189,7 @@ export function useAgentRun() {
     if (!msg || msg.resolved) return
     msg.resolved = approved ? 'ok' : 'no'
     try {
-      await postJson('/api/approvals', { id: callId, approved })
+      await postJson('/api/approvals', { id: callId, approved, mode: uiMode })
     } catch (error) {
       msg.resolved = null
       msgs.value.push({ id: uid(), kind: 'system', text: `审批提交失败：${error.message}` })
@@ -186,27 +198,26 @@ export function useAgentRun() {
 
   async function changeWorkspace(path) {
     if (running.value) return
-    applyState(await postJson('/api/workspace', { path }))
+    applySharedState(await postJson('/api/workspace', { path }))
   }
 
   async function newChat() {
     if (running.value || newChatBusy.value) return false
     newChatBusy.value = true
     try {
-      const state = await postJson('/api/chat/new')
+      const state = await postJson('/api/chat/new', { mode: uiMode })
       resetLocal()
-      applyState(state)
+      applySharedState(state)
       return true
     } finally {
       newChatBusy.value = false
     }
   }
 
-  function applyState(state) {
+  function applySharedState(state) {
     mode.value = state.permission
     model.value = state.model || ''
     workspace.value = state.workspace.current_directory
-    running.value = state.running
   }
 
   function finishRun(result, message) {
@@ -234,10 +245,10 @@ export function useAgentRun() {
     thinkingEl = null
   }
 
-  return {
+  return reactive({
     msgs, steps, tokens, status, running, newChatBusy, effort, model, mode, modeBusy, workspace,
     initialize, setMode, run, stop, decide, changeWorkspace, newChat
-  }
+  })
 }
 
 function formatOutput(value) {

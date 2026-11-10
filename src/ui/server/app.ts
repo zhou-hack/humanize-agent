@@ -11,11 +11,17 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AgentEvent, AgentRunOptions } from '../../agent/index.js'
 import type { CliSession } from '../../cli/session.js'
-import { getConversationMessages, type Conversation, type MemoryService } from '../../memory/index.js'
+import {
+  DEFAULT_MEMORY_SCOPE,
+  getConversationMessages,
+  type Conversation,
+  type MemoryService
+} from '../../memory/index.js'
 import type {
   CommandApprovalHandler,
   CommandApprovalRequest
 } from '../../tools/tool_calling/index.js'
+import { ConnectionError, type ConnectionManager } from './connection.js'
 
 const DEFAULT_STATIC_ROOT = fileURLToPath(new URL('../web/', import.meta.url))
 const MAX_BODY_BYTES = 64 * 1024
@@ -23,9 +29,18 @@ const EFFORTS: ReadonlySet<string> = new Set(['low', 'medium', 'high', 'xhigh', 
 
 type UiSession = Pick<CliSession, 'run' | 'snapshot' | 'cd' | 'setPermission' | 'close'>
 
+export type UiMode = 'chat' | 'curation'
+
+const UI_MODES: readonly UiMode[] = ['chat', 'curation']
+const MODE_SCOPES: Record<UiMode, string> = {
+  chat: DEFAULT_MEMORY_SCOPE,
+  curation: 'ui:event-curation'
+}
+
 export interface UiRuntimeOptions {
   memory: Pick<MemoryService, 'startNewConversation' | 'store'>
-  createSession: (requestApproval: CommandApprovalHandler) => Promise<UiSession>
+  createSession: (requestApproval: CommandApprovalHandler, mode: UiMode) => Promise<UiSession>
+  connection?: Pick<ConnectionManager, 'model' | 'getPublicConfig' | 'save' | 'listModels'>
   model?: string
   staticRoot?: string
 }
@@ -41,6 +56,14 @@ interface ActiveRun {
   response: ServerResponse
 }
 
+interface SessionContext {
+  session: UiSession
+  active?: ActiveRun
+  runStarting: boolean
+  archiving: boolean
+  pendingApprovals: Map<string, (approved: boolean) => void>
+}
+
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
     super(message)
@@ -48,43 +71,92 @@ class HttpError extends Error {
 }
 
 export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRuntime> {
-  let active: ActiveRun | undefined
-  let runStarting = false
-  let archiving = false
-  const pendingApprovals = new Map<string, (approved: boolean) => void>()
+  const contexts = new Map<UiMode, SessionContext>()
+  let operationLock = false
 
-  const publish = (event: string, data: unknown): void => {
-    if (active) writeEvent(active.response, event, data)
+  const publish = (context: SessionContext, event: string, data: unknown): void => {
+    if (context.active) writeEvent(context.active.response, event, data)
   }
-  const rejectPendingApprovals = (): void => {
-    for (const resolve of pendingApprovals.values()) resolve(false)
-    pendingApprovals.clear()
+  const rejectPendingApprovals = (context: SessionContext): void => {
+    for (const resolve of context.pendingApprovals.values()) resolve(false)
+    context.pendingApprovals.clear()
   }
-  const requestApproval: CommandApprovalHandler = (request: CommandApprovalRequest) => {
-    if (!active) return Promise.resolve(false)
-    const approvalId = randomUUID()
-    publish('approval_request', { approvalId, ...request })
-    return new Promise<boolean>((resolve) => {
-      pendingApprovals.set(approvalId, resolve)
-    })
+
+  try {
+    for (const mode of UI_MODES) {
+      let context!: SessionContext
+      const requestApproval: CommandApprovalHandler = (request: CommandApprovalRequest) => {
+        if (!context.active) return Promise.resolve(false)
+        const approvalId = randomUUID()
+        publish(context, 'approval_request', { approvalId, ...request })
+        return new Promise<boolean>((resolve) => {
+          context.pendingApprovals.set(approvalId, resolve)
+        })
+      }
+      const session = await options.createSession(requestApproval, mode)
+      context = {
+        session,
+        runStarting: false,
+        archiving: false,
+        pendingApprovals: new Map()
+      }
+      contexts.set(mode, context)
+    }
+  } catch (error) {
+    await Promise.all([...contexts.values()].map(context => context.session.close()))
+    throw error
   }
-  const session = await options.createSession(requestApproval)
+
+  const contextFor = (mode: UiMode): SessionContext => contexts.get(mode) as SessionContext
+  const anySessionBusy = (): boolean => [...contexts.values()].some(context =>
+    context.active !== undefined || context.runStarting || context.archiving
+  )
   const staticRoot = options.staticRoot ?? DEFAULT_STATIC_ROOT
 
-  const state = (): Record<string, unknown> => ({
-    ...session.snapshot(),
-    model: options.model ?? null,
-    running: active !== undefined || runStarting
-  })
+  const state = (mode: UiMode = 'chat'): Record<string, unknown> => {
+    const context = contextFor(mode)
+    return {
+      ...context.session.snapshot(),
+      model: options.connection ? options.connection.model || null : options.model ?? null,
+      running: context.active !== undefined || context.runStarting
+    }
+  }
 
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       if (url.pathname === '/api/state' && request.method === 'GET') {
-        sendJson(response, 200, state())
+        sendJson(response, 200, state(parseMode(url.searchParams.get('mode') ?? undefined)))
+        return
+      }
+      if (url.pathname === '/api/connection' && request.method === 'GET') {
+        if (!options.connection) throw new HttpError(404, 'API 不存在')
+        sendJson(response, 200, options.connection.getPublicConfig())
+        return
+      }
+      if (url.pathname === '/api/connection/models' && request.method === 'POST') {
+        if (!options.connection) throw new HttpError(404, 'API 不存在')
+        const body = await readJson(request)
+        sendJson(response, 200, { models: await options.connection.listModels(body) })
+        return
+      }
+      if (url.pathname === '/api/connection' && request.method === 'POST') {
+        if (!options.connection) throw new HttpError(404, 'API 不存在')
+        if (anySessionBusy() || operationLock) {
+          throw new HttpError(409, '任务运行、启动或归档期间不能保存连接设置')
+        }
+        operationLock = true
+        try {
+          const body = await readJson(request)
+          const connection = await options.connection.save(body)
+          sendJson(response, 200, { connection, state: state() })
+        } finally {
+          operationLock = false
+        }
         return
       }
       if (url.pathname === '/api/history' && request.method === 'GET') {
+        const mode = parseMode(url.searchParams.get('mode') ?? undefined)
         const limit = integerParam(url, 'limit', 20, 1, 50)
         const beforeValue = url.searchParams.get('before')
         const beforeId = url.searchParams.get('before_id')
@@ -94,7 +166,11 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
         const before = beforeValue === null || beforeId === null
           ? undefined
           : { lastMessageAt: integerParam(url, 'before', 0, 0, Number.MAX_SAFE_INTEGER), id: beforeId }
-        const rows = options.memory.store.listClosedConversations({ limit: limit + 1, ...(before ? { before } : {}) })
+        const rows = options.memory.store.listClosedConversations({
+          limit: limit + 1,
+          scope: MODE_SCOPES[mode],
+          ...(before ? { before } : {})
+        })
         const hasMore = rows.length > limit
         const conversations = rows.slice(0, limit)
         const last = conversations.at(-1)
@@ -109,6 +185,7 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
       }
       const historyMessagesMatch = /^\/api\/history\/([^/]+)\/messages$/.exec(url.pathname)
       if (historyMessagesMatch && request.method === 'GET') {
+        const mode = parseMode(url.searchParams.get('mode') ?? undefined)
         let id: string
         try {
           id = decodeURIComponent(historyMessagesMatch[1] as string)
@@ -116,58 +193,77 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
           throw new HttpError(400, '历史会话 ID 无效')
         }
         const conversation = options.memory.store.findConversation(id)
-        if (!conversation || conversation.status !== 'closed') {
+        if (
+          !conversation ||
+          conversation.status !== 'closed' ||
+          conversation.scope !== MODE_SCOPES[mode]
+        ) {
           throw new HttpError(404, '历史会话不存在')
         }
         const offset = integerParam(url, 'offset', 0, 0, Number.MAX_SAFE_INTEGER)
         const limit = integerParam(url, 'limit', 50, 1, 100)
         sendJson(response, 200, {
-          ...getConversationMessages(options.memory.store, id, offset, limit),
+          ...getConversationMessages(options.memory.store, id, offset, limit, MODE_SCOPES[mode]),
           conversation: historyConversation(conversation),
           read_only: true
         })
         return
       }
       if (url.pathname === '/api/directories' && request.method === 'GET') {
-        const current = session.snapshot().workspace.current_directory
+        const mode = parseMode(url.searchParams.get('mode') ?? undefined)
+        const current = contextFor(mode).session.snapshot().workspace.current_directory
         sendJson(response, 200, await listDirectories(url.searchParams.get('path') ?? current, current))
         return
       }
       if (url.pathname === '/api/workspace' && request.method === 'POST') {
-        if (active) throw new HttpError(409, '任务运行期间不能切换工作区')
-        const body = await readJson(request)
-        if (typeof body.path !== 'string' || !body.path.trim()) {
-          throw new HttpError(400, 'path 不能为空')
+        if (anySessionBusy() || operationLock) {
+          throw new HttpError(409, '任一任务运行、启动或归档期间不能切换工作区')
         }
-        sendJson(response, 200, {
-          ...await session.cd(body.path.trim()),
-          running: false
-        })
+        operationLock = true
+        try {
+          const body = await readJson(request)
+          if (typeof body.path !== 'string' || !body.path.trim()) {
+            throw new HttpError(400, 'path 不能为空')
+          }
+          const directory = body.path.trim()
+          for (const mode of UI_MODES) await contextFor(mode).session.cd(directory)
+          sendJson(response, 200, state())
+        } finally {
+          operationLock = false
+        }
         return
       }
       if (url.pathname === '/api/permission' && request.method === 'POST') {
-        if (active) throw new HttpError(409, '任务运行期间不能切换权限')
-        const body = await readJson(request)
-        const mode = body.mode
-        if (mode !== 'workspace' && mode !== 'approval') {
-          throw new HttpError(400, 'mode 必须是 workspace 或 approval')
+        if (anySessionBusy() || operationLock) {
+          throw new HttpError(409, '任一任务运行、启动或归档期间不能切换权限')
         }
-        sendJson(response, 200, {
-          ...await session.setPermission(mode),
-          running: false
-        })
+        operationLock = true
+        try {
+          const body = await readJson(request)
+          const mode = body.mode
+          if (mode !== 'workspace' && mode !== 'approval') {
+            throw new HttpError(400, 'mode 必须是 workspace 或 approval')
+          }
+          for (const uiMode of UI_MODES) await contextFor(uiMode).session.setPermission(mode)
+          sendJson(response, 200, state())
+        } finally {
+          operationLock = false
+        }
         return
       }
       if (url.pathname === '/api/chat/new' && request.method === 'POST') {
-        if (active || runStarting || archiving) {
+        const body = await readOptionalJson(request)
+        const mode = parseMode(body.mode)
+        const context = contextFor(mode)
+        if (context.active || context.runStarting || context.archiving || operationLock) {
           throw new HttpError(409, '任务运行或归档期间不能新建对话')
         }
-        archiving = true
+        context.archiving = true
         try {
-          await options.memory.startNewConversation()
-          sendJson(response, 200, state())
+          await options.memory.startNewConversation(MODE_SCOPES[mode])
+          sendJson(response, 200, state(mode))
         } finally {
-          archiving = false
+          context.archiving = false
         }
         return
       }
@@ -176,27 +272,32 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
         if (typeof body.id !== 'string' || typeof body.approved !== 'boolean') {
           throw new HttpError(400, '审批参数无效')
         }
-        const resolve = pendingApprovals.get(body.id)
+        const context = contextFor(parseMode(body.mode))
+        const resolve = context.pendingApprovals.get(body.id)
         if (!resolve) throw new HttpError(404, '审批请求不存在或已处理')
-        pendingApprovals.delete(body.id)
+        context.pendingApprovals.delete(body.id)
         resolve(body.approved)
         sendJson(response, 200, { ok: true })
         return
       }
       if (url.pathname === '/api/runs/stop' && request.method === 'POST') {
-        const stopped = active !== undefined
-        active?.controller.abort()
-        rejectPendingApprovals()
+        const body = await readOptionalJson(request)
+        const context = contextFor(parseMode(body.mode))
+        const stopped = context.active !== undefined
+        context.active?.controller.abort()
+        rejectPendingApprovals(context)
         sendJson(response, 200, { stopped })
         return
       }
       if (url.pathname === '/api/runs' && request.method === 'POST') {
-        if (active || runStarting || archiving) {
+        const body = await readJson(request)
+        const mode = parseMode(body.mode)
+        const context = contextFor(mode)
+        if (context.active || context.runStarting || context.archiving || operationLock) {
           throw new HttpError(409, '已有任务正在执行或归档')
         }
-        runStarting = true
+        context.runStarting = true
         try {
-          const body = await readJson(request)
           if (typeof body.text !== 'string' || !body.text.trim()) {
             throw new HttpError(400, 'text 不能为空')
           }
@@ -205,14 +306,14 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
             text: body.text.trim(),
             ...(effort !== undefined ? { effort } : {}),
             response,
-            session,
-            setActive: (run) => { active = run },
-            clearActive: () => { active = undefined },
-            publish,
-            rejectPendingApprovals
+            session: context.session,
+            setActive: (run) => { context.active = run },
+            clearActive: () => { context.active = undefined },
+            publish: (event, data) => publish(context, event, data),
+            rejectPendingApprovals: () => rejectPendingApprovals(context)
           })
         } finally {
-          runStarting = false
+          context.runStarting = false
         }
         return
       }
@@ -221,7 +322,7 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
       }
       await serveStatic(request, response, staticRoot, url.pathname)
     } catch (error) {
-      const status = error instanceof HttpError ? error.status : 500
+      const status = error instanceof HttpError || error instanceof ConnectionError ? error.status : 500
       const message = error instanceof Error ? error.message : '服务器内部错误'
       if (!response.headersSent) {
         sendJson(response, status, { error: message })
@@ -235,8 +336,10 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
   return {
     server,
     close: () => closePromise ??= (async () => {
-      active?.controller.abort()
-      rejectPendingApprovals()
+      for (const context of contexts.values()) {
+        context.active?.controller.abort()
+        rejectPendingApprovals(context)
+      }
       server.closeAllConnections()
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
@@ -247,7 +350,7 @@ export async function createUiRuntime(options: UiRuntimeOptions): Promise<UiRunt
           }
         })
       })
-      await session.close()
+      await Promise.all([...contexts.values()].map(context => context.session.close()))
     })()
   }
 }
@@ -378,6 +481,12 @@ function historyConversation(conversation: Conversation): Record<string, unknown
   }
 }
 
+function parseMode(value: unknown): UiMode {
+  if (value === undefined || value === 'chat') return 'chat'
+  if (value === 'curation') return value
+  throw new HttpError(400, 'mode 必须是 chat 或 curation')
+}
+
 function parseEffort(value: unknown): AgentRunOptions['effort'] {
   if (value === undefined) return undefined
   if (typeof value !== 'string' || !EFFORTS.has(value)) {
@@ -407,6 +516,13 @@ function writeEvent(response: ServerResponse, event: string, data: unknown): voi
   if (!response.writableEnded) {
     response.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
   }
+}
+
+async function readOptionalJson(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const contentType = request.headers['content-type']
+  const contentLength = request.headers['content-length']
+  if (!contentType && (!contentLength || contentLength === '0')) return {}
+  return readJson(request)
 }
 
 async function readJson(request: IncomingMessage): Promise<Record<string, unknown>> {

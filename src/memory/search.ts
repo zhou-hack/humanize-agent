@@ -1,5 +1,5 @@
 import { ToolError } from '../tools/tool_calling/errors.js'
-import type { MemoryStore, StoredMessage } from './store.js'
+import { DEFAULT_MEMORY_SCOPE, type MemoryStore, type StoredMessage } from './store.js'
 
 export const SEARCH_PAGE_SIZE = 10
 export const DEFAULT_CONVERSATION_PAGE_SIZE = 50
@@ -45,7 +45,12 @@ export interface ConversationMessagePage {
   has_more: boolean
 }
 
-export function searchMemory(store: MemoryStore, query: string, page = 0): MemorySearchResult {
+export function searchMemory(
+  store: MemoryStore,
+  query: string,
+  page = 0,
+  scope = DEFAULT_MEMORY_SCOPE
+): MemorySearchResult {
   const normalized = query.trim()
   if (!normalized) {
     throw new ToolError('invalid_args', '检索关键词不能为空')
@@ -56,8 +61,8 @@ export function searchMemory(store: MemoryStore, query: string, page = 0): Memor
   const match = shortQuery ? null : escapeFtsPhrase(normalized)
   const pattern = shortQuery ? toLikePattern(normalized) : null
   const rows = shortQuery
-    ? store.searchByLike(pattern as string, SEARCH_PAGE_SIZE + 1, page * SEARCH_PAGE_SIZE)
-    : store.searchByMatch(match as string, SEARCH_PAGE_SIZE + 1, page * SEARCH_PAGE_SIZE)
+    ? store.searchByLike(pattern as string, SEARCH_PAGE_SIZE + 1, page * SEARCH_PAGE_SIZE, scope)
+    : store.searchByMatch(match as string, SEARCH_PAGE_SIZE + 1, page * SEARCH_PAGE_SIZE, scope)
   const hasMore = rows.length > SEARCH_PAGE_SIZE
   const pageRows = rows.slice(0, SEARCH_PAGE_SIZE)
 
@@ -78,12 +83,17 @@ export function searchMemory(store: MemoryStore, query: string, page = 0): Memor
   }
 }
 
-export function listMemory(store: MemoryStore, before?: string, now = Date.now()): MemoryListResult {
+export function listMemory(
+  store: MemoryStore,
+  before?: string,
+  now = Date.now(),
+  scope = DEFAULT_MEMORY_SCOPE
+): MemoryListResult {
   const beforeDate = parseLocalDate(before ?? formatLocalDate(now))
   const fromDate = new Date(beforeDate)
   fromDate.setDate(fromDate.getDate() - 7)
-  const conversations = store.listConversationIndexes(fromDate.getTime(), beforeDate.getTime())
-  const nextBefore = store.hasConversationIndexBefore(fromDate.getTime())
+  const conversations = store.listConversationIndexes(fromDate.getTime(), beforeDate.getTime(), scope)
+  const nextBefore = store.hasConversationIndexBefore(fromDate.getTime(), scope)
     ? formatLocalDate(fromDate.getTime())
     : null
 
@@ -103,13 +113,15 @@ export function getConversationMessages(
   store: MemoryStore,
   id: string,
   offset = 0,
-  limit = DEFAULT_CONVERSATION_PAGE_SIZE
+  limit = DEFAULT_CONVERSATION_PAGE_SIZE,
+  scope = DEFAULT_MEMORY_SCOPE
 ): ConversationMessagePage {
   assertNonNegativeInteger(offset, 'offset')
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_CONVERSATION_PAGE_SIZE) {
     throw new ToolError('invalid_args', `limit 必须是 1 到 ${MAX_CONVERSATION_PAGE_SIZE} 之间的整数`)
   }
-  store.getConversation(id)
+  const conversation = store.getConversation(id)
+  if (conversation.scope !== scope) throw new ToolError('not_found', '会话不存在')
   const rows = store.listMessages(id, { offset, limit: limit + 1 })
 
   return {

@@ -76,8 +76,8 @@ function onPointerUp() {
       :aria-label="LABELS[m]"
       :disabled="disabled"
       @click.stop="setMode(m)">
-      <svg v-if="m === 'workspace'" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="var(--ok)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17.5V20h2.5L18.8 7.7a1.8 1.8 0 0 0 0-2.5l-.1-.1a1.8 1.8 0 0 0-2.5 0L4 17.5z"/><path d="M14.5 6.8l2.7 2.7"/><path d="M12 20h8"/></svg>
-      <svg v-else viewBox="0 0 24 24" width="20" height="20"><path d="M12 3.2L22 20.5H2L12 3.2z" fill="none" stroke="#f2b01e" stroke-width="1.8" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="#f2b01e" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="17.6" r="1.2" fill="#f2b01e"/></svg>
+      <svg v-if="m === 'workspace'" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5h6l2-2h9v13h-17z"/><path d="M3.5 10h17"/></svg>
+      <svg v-else viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 7 3v5c0 4.4-2.8 7.4-7 9-4.2-1.6-7-4.6-7-9V6z"/><path d="M12 8.5v4.5"/><path d="M12 16.5h.01"/></svg>
     </button>
   </div>
 </template>

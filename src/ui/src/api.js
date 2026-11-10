@@ -1,6 +1,19 @@
-export async function getState() {
-  const response = await fetch('/api/state')
+export async function getState(mode = 'chat') {
+  const response = await fetch(`/api/state?mode=${encodeURIComponent(mode)}`)
   return expectJson(response)
+}
+
+export async function getConnection() {
+  const response = await fetch('/api/connection')
+  return expectJson(response)
+}
+
+export async function fetchConnectionModels(config) {
+  return postJson('/api/connection/models', config)
+}
+
+export async function saveConnection(config) {
+  return postJson('/api/connection', config)
 }
 
 export async function getDirectories(path) {
@@ -8,19 +21,18 @@ export async function getDirectories(path) {
   return expectJson(response)
 }
 
-export async function getHistory(cursor) {
-  const params = new URLSearchParams()
+export async function getHistory(cursor, mode = 'chat', limit = 30) {
+  const params = new URLSearchParams({ mode, limit: String(limit) })
   if (cursor) {
     params.set('before', String(cursor.last_message_at))
     params.set('before_id', cursor.id)
   }
-  const query = params.toString()
-  const response = await fetch(`/api/history${query ? `?${query}` : ''}`)
+  const response = await fetch(`/api/history?${params}`)
   return expectJson(response)
 }
 
-export async function getHistoryMessages(id, offset = 0) {
-  const params = new URLSearchParams({ offset: String(offset) })
+export async function getHistoryMessages(id, offset = 0, mode = 'chat') {
+  const params = new URLSearchParams({ mode, offset: String(offset) })
   const response = await fetch(`/api/history/${encodeURIComponent(id)}/messages?${params}`)
   return expectJson(response)
 }
@@ -34,11 +46,11 @@ export async function postJson(path, body = {}) {
   return expectJson(response)
 }
 
-export async function streamAgentRun(text, { signal, effort, onEvent }) {
+export async function streamAgentRun(text, { signal, effort, mode = 'chat', onEvent }) {
   const response = await fetch('/api/runs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, ...(effort ? { effort } : {}) }),
+    body: JSON.stringify({ text, mode, ...(effort ? { effort } : {}) }),
     signal
   })
   if (!response.ok) await throwResponseError(response)

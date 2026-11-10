@@ -5,12 +5,14 @@ import { DatabaseSync } from 'node:sqlite'
 import { ToolError } from '../tools/tool_calling/errors.js'
 
 export const DEFAULT_DATABASE_PATH = resolve(process.cwd(), 'src/data/memory/memory.db')
+export const DEFAULT_MEMORY_SCOPE = 'local'
 
 export type ConversationStatus = 'active' | 'closed'
 export type MessageRole = 'user' | 'assistant' | 'tool'
 
 export interface Conversation {
   id: string
+  scope: string
   title: string | null
   desc: string | null
   status: ConversationStatus
@@ -83,7 +85,7 @@ export class MemoryStore {
 
     this.db = new DatabaseSync(databasePath)
     try {
-      this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;')
+      this.db.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;')
       this.initializeSchema()
     } catch (error) {
       this.db.close()
@@ -95,11 +97,11 @@ export class MemoryStore {
     this.db.close()
   }
 
-  createConversation(createdAt = Date.now(), id: string = randomUUID()): Conversation {
+  createConversation(createdAt = Date.now(), id: string = randomUUID(), scope = DEFAULT_MEMORY_SCOPE): Conversation {
     this.db.prepare(`
-      INSERT INTO conversations (id, status, created_at, last_message_at)
-      VALUES (?, 'active', ?, ?)
-    `).run(id, createdAt, createdAt)
+      INSERT INTO conversations (id, scope, status, created_at, last_message_at)
+      VALUES (?, ?, 'active', ?, ?)
+    `).run(id, scope, createdAt, createdAt)
     return this.getConversation(id)
   }
 
@@ -116,13 +118,13 @@ export class MemoryStore {
     return row ? mapConversation(row) : null
   }
 
-  getLatestActiveConversation(): Conversation | null {
+  getLatestActiveConversation(scope = DEFAULT_MEMORY_SCOPE): Conversation | null {
     const row = this.db.prepare(`
       SELECT * FROM conversations
-      WHERE status = 'active'
+      WHERE status = 'active' AND scope = ?
       ORDER BY created_at DESC
       LIMIT 1
-    `).get()
+    `).get(scope)
     return row ? mapConversation(row) : null
   }
 
@@ -134,9 +136,10 @@ export class MemoryStore {
   listClosedConversations(options: {
     limit: number
     before?: { lastMessageAt: number; id: string }
+    scope?: string
   }): Conversation[] {
-    const conditions = ["status = 'closed'"]
-    const parameters: Array<string | number> = []
+    const conditions = ["status = 'closed'", 'scope = ?']
+    const parameters: Array<string | number> = [options.scope ?? DEFAULT_MEMORY_SCOPE]
     if (options.before) {
       conditions.push('(last_message_at < ? OR (last_message_at = ? AND id < ?))')
       parameters.push(options.before.lastMessageAt, options.before.lastMessageAt, options.before.id)
@@ -241,34 +244,35 @@ export class MemoryStore {
     }
   }
 
-  listRecentConversations(since: number, currentId?: string): ConversationIndex[] {
+  listRecentConversations(since: number, currentId?: string, scope = DEFAULT_MEMORY_SCOPE): ConversationIndex[] {
     return this.db.prepare(`
       SELECT id, title, "desc", last_message_at FROM conversations
       WHERE last_message_at >= ?
         AND title IS NOT NULL
+        AND scope = ?
         AND (? IS NULL OR id != ?)
       ORDER BY last_message_at DESC
-    `).all(since, currentId ?? null, currentId ?? null).map(mapConversationIndex)
+    `).all(since, scope, currentId ?? null, currentId ?? null).map(mapConversationIndex)
   }
 
-  listConversationIndexes(from: number, before: number): ConversationIndex[] {
+  listConversationIndexes(from: number, before: number, scope = DEFAULT_MEMORY_SCOPE): ConversationIndex[] {
     return this.db.prepare(`
       SELECT id, title, "desc", last_message_at FROM conversations
-      WHERE title IS NOT NULL AND last_message_at >= ? AND last_message_at < ?
+      WHERE title IS NOT NULL AND last_message_at >= ? AND last_message_at < ? AND scope = ?
       ORDER BY last_message_at DESC
-    `).all(from, before).map(mapConversationIndex)
+    `).all(from, before, scope).map(mapConversationIndex)
   }
 
-  hasConversationIndexBefore(timestamp: number): boolean {
+  hasConversationIndexBefore(timestamp: number, scope = DEFAULT_MEMORY_SCOPE): boolean {
     const row = this.db.prepare(`
       SELECT 1 AS found FROM conversations
-      WHERE title IS NOT NULL AND last_message_at < ?
+      WHERE title IS NOT NULL AND last_message_at < ? AND scope = ?
       LIMIT 1
-    `).get(timestamp)
+    `).get(timestamp, scope)
     return row !== undefined
   }
 
-  searchByMatch(match: string, limit: number, offset: number): SearchConversation[] {
+  searchByMatch(match: string, limit: number, offset: number, scope = DEFAULT_MEMORY_SCOPE): SearchConversation[] {
     return this.db.prepare(`
       WITH hits AS (
         SELECT c.id AS conversation_id, 0 AS priority, bm25(conversations_fts) AS rank
@@ -288,9 +292,10 @@ export class MemoryStore {
       SELECT c.id, c.title, c."desc", c.last_message_at
       FROM ranked r
       JOIN conversations c ON c.id = r.conversation_id
+      WHERE c.scope = ?
       ORDER BY r.priority, r.rank, c.last_message_at DESC
       LIMIT ? OFFSET ?
-    `).all(match, match, limit, offset).map(mapSearchConversation)
+    `).all(match, match, scope, limit, offset).map(mapSearchConversation)
   }
 
   getMatchSnippets(conversationId: string, match: string, limit: number): string[] {
@@ -317,7 +322,7 @@ export class MemoryStore {
       .map((row) => (row as { snippet: string }).snippet)
   }
 
-  searchByLike(pattern: string, limit: number, offset: number): SearchConversation[] {
+  searchByLike(pattern: string, limit: number, offset: number, scope = DEFAULT_MEMORY_SCOPE): SearchConversation[] {
     return this.db.prepare(`
       WITH hits AS (
         SELECT c.id AS conversation_id, 0 AS priority
@@ -335,9 +340,10 @@ export class MemoryStore {
       SELECT c.id, c.title, c."desc", c.last_message_at
       FROM ranked r
       JOIN conversations c ON c.id = r.conversation_id
+      WHERE c.scope = ?
       ORDER BY r.priority, c.last_message_at DESC
       LIMIT ? OFFSET ?
-    `).all(pattern, pattern, pattern, limit, offset).map(mapSearchConversation)
+    `).all(pattern, pattern, pattern, scope, limit, offset).map(mapSearchConversation)
   }
 
   getLikeSnippetTexts(conversationId: string, pattern: string, limit: number): string[] {
@@ -398,10 +404,13 @@ export class MemoryStore {
 
   private initializeSchema(): void {
     const version = this.db.prepare('PRAGMA user_version').get() as { user_version: number }
+    if (version.user_version > 2) throw new ToolError('conflict', '记忆数据库版本高于当前程序', false)
+    const conversationColumns = this.db.prepare('PRAGMA table_info(conversations)').all() as Array<{ name: string }>
     try {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS conversations (
           id TEXT PRIMARY KEY,
+          scope TEXT NOT NULL DEFAULT 'local',
           title TEXT,
           "desc" TEXT,
           status TEXT NOT NULL CHECK (status IN ('active', 'closed')),
@@ -482,13 +491,22 @@ export class MemoryStore {
         END;
       `)
 
+      if (conversationColumns.length > 0 && !conversationColumns.some((column) => column.name === 'scope')) {
+        this.db.exec("ALTER TABLE conversations ADD COLUMN scope TEXT NOT NULL DEFAULT 'local'")
+      }
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS conversations_scope_status_created_at
+          ON conversations(scope, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS conversations_scope_last_message_at
+          ON conversations(scope, last_message_at DESC);
+      `)
       if (version.user_version === 0) {
         this.db.exec(`
           INSERT INTO conversations_fts(conversations_fts) VALUES ('rebuild');
           INSERT INTO messages_fts(messages_fts) VALUES ('rebuild');
-          PRAGMA user_version = 1;
         `)
       }
+      this.db.exec('PRAGMA user_version = 2;')
     } catch (error) {
       throw new Error('当前 SQLite 构建不支持记忆模块所需的 FTS5 trigram 分词', { cause: error })
     }
@@ -524,6 +542,7 @@ function mapConversation(row: unknown): Conversation {
   const value = row as Record<string, unknown>
   return {
     id: value.id as string,
+    scope: value.scope as string,
     title: value.title as string | null,
     desc: value.desc as string | null,
     status: value.status as ConversationStatus,

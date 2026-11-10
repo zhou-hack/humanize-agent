@@ -1,4 +1,4 @@
-import type { ConversationIndex, MemoryStore } from './store.js'
+import { DEFAULT_MEMORY_SCOPE, type ConversationIndex, type MemoryStore } from './store.js'
 import { renderPrompt } from '../prompt/loader.js'
 
 export const RECENT_WINDOW_MS = 72 * 60 * 60 * 1000
@@ -6,6 +6,7 @@ export const RECENT_WINDOW_MS = 72 * 60 * 60 * 1000
 export interface RecentMemoryOptions {
   now?: number
   currentConversationId?: string
+  scope?: string
 }
 
 export function getRecentConversations(
@@ -13,7 +14,11 @@ export function getRecentConversations(
   options: RecentMemoryOptions = {}
 ): ConversationIndex[] {
   const now = options.now ?? Date.now()
-  return store.listRecentConversations(now - RECENT_WINDOW_MS, options.currentConversationId)
+  return store.listRecentConversations(
+    now - RECENT_WINDOW_MS,
+    options.currentConversationId,
+    options.scope ?? DEFAULT_MEMORY_SCOPE
+  )
 }
 
 export function formatRecentConversationIndex(conversations: ConversationIndex[]): string {

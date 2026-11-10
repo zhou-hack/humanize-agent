@@ -17,6 +17,7 @@ export {
 } from './command_tools/index.js'
 export { createFileTools, type FileToolsOptions } from './file_tools/index.js'
 export { createWebSearchTools, type WebSearchToolsOptions } from './web_search.js'
+export { createWebFetchTools, type WebFetchToolsOptions } from './web_fetch.js'
 export {
   createWorkspaceManager,
   WorkspaceManager,

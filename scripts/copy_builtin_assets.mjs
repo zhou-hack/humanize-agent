@@ -13,7 +13,7 @@ await cp(source, destination, {
   filter: async (entry) => {
     const stat = await lstat(entry)
     if (stat.isDirectory()) return true
-    return path.basename(entry) === 'SKILL.md' || path.extname(entry) === '.json'
+    return ['SKILL.md', 'LICENSE'].includes(path.basename(entry)) || path.extname(entry) === '.json'
   }
 })
 
@@ -21,6 +21,7 @@ const promptSource = path.join(projectRoot, 'src', 'prompt')
 const promptDestination = path.join(projectRoot, 'dist', 'prompt')
 await rm(path.join(promptDestination, 'init'), { recursive: true, force: true })
 await rm(path.join(promptDestination, 'session'), { recursive: true, force: true })
+await rm(path.join(promptDestination, 'task'), { recursive: true, force: true })
 await mkdir(promptDestination, { recursive: true })
 await cp(promptSource, promptDestination, {
   recursive: true,

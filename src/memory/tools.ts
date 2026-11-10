@@ -3,11 +3,13 @@ import type { ToolContext, ToolDefinition } from '../tools/tool_calling/types.js
 import type { CoreMemory } from './core.js'
 import type { StickerMemory } from './media.js'
 import { getConversationMessages, listMemory, searchMemory } from './search.js'
-import type { MemoryStore } from './store.js'
+import { DEFAULT_MEMORY_SCOPE, type MemoryStore } from './store.js'
 
 export interface MemoryToolsOptions {
   store: MemoryStore
   core: CoreMemory
+  scope?: string
+  allowCoreWrite?: boolean
   stickers?: StickerMemory
   resolveImage?: (imageId: string, context: ToolContext) => Promise<Uint8Array>
   sendSticker?: (filePath: string, id: string, context: ToolContext) => Promise<unknown>
@@ -32,7 +34,7 @@ export function createMemoryTools(options: MemoryToolsOptions): ToolDefinition[]
       untrustedResult: true,
       handler: async (args) => {
         const input = args as { query: string; page?: number }
-        return searchMemory(options.store, input.query, input.page ?? 0)
+        return searchMemory(options.store, input.query, input.page ?? 0, options.scope ?? DEFAULT_MEMORY_SCOPE)
       }
     },
     {
@@ -49,7 +51,7 @@ export function createMemoryTools(options: MemoryToolsOptions): ToolDefinition[]
       untrustedResult: true,
       handler: async (args) => {
         const input = args as { before?: string }
-        return listMemory(options.store, input.before, options.now?.())
+        return listMemory(options.store, input.before, options.now?.(), options.scope ?? DEFAULT_MEMORY_SCOPE)
       }
     },
     {
@@ -69,7 +71,13 @@ export function createMemoryTools(options: MemoryToolsOptions): ToolDefinition[]
       untrustedResult: true,
       handler: async (args) => {
         const input = args as { id: string; offset?: number; limit?: number }
-        return getConversationMessages(options.store, input.id, input.offset, input.limit)
+        return getConversationMessages(
+          options.store,
+          input.id,
+          input.offset,
+          input.limit,
+          options.scope ?? DEFAULT_MEMORY_SCOPE
+        )
       }
     },
     {
@@ -86,7 +94,7 @@ export function createMemoryTools(options: MemoryToolsOptions): ToolDefinition[]
       },
       effect: 'write',
       handler: async (args, context) => {
-        assertCoreWriteAllowed(context)
+        assertCoreWriteAllowed(context, options.allowCoreWrite ?? true)
         const input = args as { content: string; replaces?: string }
         return options.core.remember(input.content, input.replaces)
       }
@@ -104,7 +112,7 @@ export function createMemoryTools(options: MemoryToolsOptions): ToolDefinition[]
       },
       effect: 'write',
       handler: async (args, context) => {
-        assertCoreWriteAllowed(context)
+        assertCoreWriteAllowed(context, options.allowCoreWrite ?? true)
         const input = args as { id: string }
         return options.core.forget(input.id)
       }
@@ -207,7 +215,10 @@ function createStickerTools(
   ]
 }
 
-function assertCoreWriteAllowed(context: ToolContext): void {
+function assertCoreWriteAllowed(context: ToolContext, allowCoreWrite: boolean): void {
+  if (!allowCoreWrite) {
+    throw new ToolError('forbidden', '仅主人可以修改核心记忆')
+  }
   if (context.untrustedSeen) {
     throw new ToolError('forbidden', '本轮已读取外部或历史内容，请等待用户下一条消息后再修改核心记忆')
   }

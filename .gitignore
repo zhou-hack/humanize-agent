@@ -17,6 +17,9 @@ build/
 *.db-wal
 *.db-shm
 src/data/memory/MEMORY.md
+src/data/knowledge/model_cache/
+src/data/ilinkbot/
+ilink_qrcode.png
 
 # 多媒体临时文件
 src/data/multimedia/*/temp/

@@ -15,16 +15,27 @@
     "ui": "npm run ui:build && node dist/ui/server/index.js",
     "ui:build": "npm run build && npm --prefix src/ui run build",
     "ui:api": "npm run build && node dist/ui/server/index.js",
-    "ui:dev": "npm --prefix src/ui run dev"
+    "ui:dev": "npm --prefix src/ui run dev",
+    "qq": "npm run build && node dist/channel/onebot/index.js",
+    "ilinkbot": "npm run build && node dist/channel/ilinkbot/index.js",
+    "all": "npm run ui:build && node scripts/start_all.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
+    "@huggingface/transformers": "^4.3.2",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "ajv": "^8.17.1",
-    "openai": "^7.45.1"
+    "openai": "^7.45.1",
+    "qrcode": "^1.5.4",
+    "turndown": "^7.2.5",
+    "undici": "^8.12.4",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/turndown": "^5.0.6",
+    "@types/ws": "^8.18.2",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

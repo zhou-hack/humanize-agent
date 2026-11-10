@@ -5,13 +5,17 @@ import type { CliSession, CliSnapshot } from './session.js'
 
 const HELP = `命令：
 /help 查看帮助
+/new 总结并归档当前会话，直接开始新对话
 /cd <路径> 切换工作区（目录必须已存在），无参显示当前工作区
 /permission [workspace|approval] 无参切换，带参设置权限；open 暂未开放
 /exit 退出
 运行中按 Ctrl+C 取消当前请求。
 `
 
-export type ReplSession = Pick<CliSession, 'run' | 'snapshot' | 'cd' | 'setPermission' | 'close'>
+export type ReplSession = Pick<
+  CliSession,
+  'run' | 'snapshot' | 'cd' | 'setPermission' | 'startNewConversation' | 'close'
+>
 
 export interface ReplOptions {
   createSession: (requestApproval: CommandApprovalHandler) => ReplSession | Promise<ReplSession>
@@ -134,6 +138,16 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       if (text === '/exit') break
       if (text === '/help') {
         output.write(HELP)
+        if (!closed) readline.prompt()
+        continue
+      }
+      if (text === '/new') {
+        try {
+          await session.startNewConversation()
+          output.write('已开始新对话。\n')
+        } catch (error) {
+          writeError(errorOutput, error)
+        }
         if (!closed) readline.prompt()
         continue
       }
